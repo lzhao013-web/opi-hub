@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark"><title>opi-hub</title>
+  <link rel="icon" href="/_hub/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/_hub/style.css"><script type="module" src="/_hub/app.js"></script>
+</head>
+<body>
+  <main id="login" class="login" hidden>
+    <form id="login-form" class="login-panel">
+      <img class="brand-icon" src="/_hub/icon.svg" alt="" width="44" height="44">
+      <h1>连接你的工作空间</h1><p class="muted">登录 opi-hub，访问各设备上的 o-pi。</p>
+      <label for="password">中心密码</label>
+      <input id="password" type="password" autocomplete="current-password" required autofocus>
+      <p id="login-error" class="error" role="alert" hidden></p>
+      <button id="login-submit" class="primary" type="submit">登录</button>
+      <p class="footnote">会话与文件保留在各自设备上。</p>
+    </form>
+  </main>
+  <div id="workspace" class="workspace" hidden>
+    <aside class="sidebar">
+      <a href="/" class="brand"><img src="/_hub/icon.svg" width="28" height="28" alt=""><span>opi<span class="brand-secondary"> hub</span></span></a>
+      <nav class="global-nav" aria-label="管理视图">
+        <button id="overview-nav" class="nav-item selected" type="button"><span>概览</span></button>
+        <button id="history-nav" class="nav-item" type="button"><span>查找历史</span></button>
+        <button id="all-interactions" class="nav-item" type="button"><span>待处理交互</span><span id="interaction-count" class="count">0</span></button>
+        <button id="all-devices" class="nav-item" type="button"><span>全部设备</span><span id="device-count" class="count">0</span></button>
+      </nav>
+      <div class="sidebar-heading"><span>我的设备</span><button class="icon-button" id="add-sidebar" type="button" title="添加设备" aria-label="添加设备">+</button></div>
+      <nav id="device-nav" aria-label="设备"></nav>
+      <div class="sidebar-footer"><span id="center-dot" class="status-dot online"></span><span id="center-status">中心已连接</span><button id="logout" class="text-button" type="button">退出</button></div>
+    </aside>
+    <main class="canvas">
+      <header class="toolbar"><span>工作空间 <span class="muted">/</span> <span id="breadcrumb">概览</span></span><button id="theme" class="text-button" type="button" aria-label="切换主题">跟随系统</button></header>
+      <section class="content">
+        <div class="page-heading"><div><p class="eyebrow">OPI HUB</p><h1 id="heading">概览</h1><p id="page-description" class="muted">关注正在进行的工作，不展开全部历史。</p></div><button id="add-device" class="primary" type="button"><span aria-hidden="true">+</span> 添加设备</button></div>
+        <div class="summary"><span><span id="online-count" class="status-dot online"></span><span id="summary-text">正在连接…</span></span><span class="muted">任务在设备本机运行</span></div>
+        <p id="workspace-error" class="notice" role="alert" hidden></p>
+        <div id="management-status" role="status"></div>
+        <div class="mobile-scope"><label for="workspace-picker">设备与工作区</label><select id="workspace-picker" aria-label="设备与工作区"></select></div>
+        <p id="selected-workspace" class="selected-workspace muted" hidden></p>
+        <section id="overview-view" aria-label="运行概览">
+          <div id="overview-devices" class="overview-devices"></div>
+          <h2 class="section-title">正在进行</h2><div id="active-sessions" class="session-list"></div>
+          <h2 class="section-title">最近活动</h2><p class="section-caption muted">最多展示 5 个最近活动的空闲会话。</p><div id="recent-sessions" class="session-list"></div>
+        </section>
+        <section id="device-view" aria-label="设备工作区" hidden>
+          <h2 class="section-title">工作区</h2><div id="workspaces" class="workspace-cards"></div>
+          <h2 class="section-title">正在进行</h2><div id="device-sessions" class="session-list"></div>
+        </section>
+        <section id="workspace-view" aria-label="工作区会话" hidden>
+          <div class="workspace-controls"><div class="session-controls"><label for="session-search">筛选当前工作区</label><input id="session-search" type="search" placeholder="会话标题" autocomplete="off"></div><button id="load-history" class="secondary" type="button">加载历史会话</button></div>
+          <p id="history-status" class="section-caption muted" role="status"></p><div id="sessions" class="session-list"></div>
+        </section>
+        <section id="history-view" aria-label="历史查询" hidden>
+          <form id="history-form" class="history-form"><div><label for="history-query">历史关键词</label><input id="history-query" type="search" required placeholder="标题、设备或工作目录" autocomplete="off"></div><div><label for="history-device">查询范围</label><select id="history-device"></select></div><button id="search-history" class="primary" type="submit">搜索历史</button><button id="cancel-search" class="secondary" type="button" hidden>取消搜索</button></form>
+          <p id="global-history-status" class="section-caption muted" role="status"></p><div id="history-errors"></div><div id="history-results" class="session-list"></div>
+        </section>
+        <section id="interactions" class="interaction-list" aria-label="待处理交互" hidden></section>
+        <div id="devices" class="devices" aria-live="polite" hidden></div>
+        <div id="empty" class="empty" hidden><div class="monitor-icon large" aria-hidden="true"></div><h2>从第一台设备开始</h2><p class="muted">添加设备并运行连接程序，即可在这里打开它的原生 o-pi 界面。</p><button id="add-empty" class="primary" type="button">添加设备</button></div>
+        <footer class="content-footer">文件、模型凭据和运行环境留在设备上。中心负责连接与转发。</footer>
+      </section>
+    </main>
+  </div>
+  <dialog id="enroll-dialog" aria-labelledby="enroll-title">
+    <form id="enroll-form">
+      <div class="dialog-heading"><h2 id="enroll-title">添加设备</h2><button id="close-enroll" class="icon-button" type="button" aria-label="关闭">×</button></div>
+      <div id="enroll-name-step"><p class="muted">为设备创建独立凭据，之后在该设备运行连接程序。</p><label for="device-name">设备名称</label><input id="device-name" placeholder="例如：开发台式机" maxlength="80" required><p id="enroll-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button class="primary" id="enroll-submit" type="submit">创建设备</button></div></div>
+      <div id="enroll-config-step" hidden><p>在目标设备保存为 <code>node.json</code>：</p><textarea id="node-config" readonly rows="8" spellcheck="false" aria-label="节点配置"></textarea><p class="footnote">凭据仅在此处显示一次。请勿分享，并限制配置文件的读取权限。</p><div class="config-actions"><button id="download-config" class="secondary" type="button">下载配置</button><button id="copy-config" class="secondary" type="button">复制配置</button></div><ol class="steps"><li>启动该设备的 <code>opi-web</code>，或启用 Desktop Web。</li><li>确认配置中的 <code>target</code> 与本机 Web 地址一致。</li><li>在 opi-hub 项目目录运行：<pre>bun run node --config /path/to/node.json</pre></li></ol><div class="dialog-actions"><button id="finish-enroll" class="primary" type="button">完成</button></div></div>
+    </form>
+  </dialog>
+  <dialog id="remove-dialog" aria-labelledby="remove-title"><form id="remove-form"><h2 id="remove-title">移除设备？</h2><p id="remove-description"></p><p class="muted">撤销凭据并断开远程访问，不会删除本机会话或停止 o-pi 任务。</p><p id="remove-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button id="cancel-remove" class="secondary" type="button">取消</button><button id="confirm-remove" class="danger" type="submit">移除设备</button></div></form></dialog>
+</body>
+</html>

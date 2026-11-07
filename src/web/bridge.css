@@ -1,0 +1,2 @@
+.hub-native-error { position: relative; z-index: 100; padding: 12px 20px; background: #2c2c2e; color: #f2f2f7; font: 14px/1.6 system-ui,sans-serif; overflow-wrap: anywhere; }
+.hub-native-error a { color: #70b4ff; text-decoration: underline; }

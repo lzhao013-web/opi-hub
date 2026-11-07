@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+node.json
+/3090.json
+*.local.json
+playwright-report/
+test-results/
+.env
