@@ -21,7 +21,8 @@ export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req:
   let ended = false;
   let html: Buffer[] | undefined;
   let htmlSize = 0;
-  const timeout = setTimeout(() => { fail(new Error("目标响应头超时")); }, 30_000);
+  const operation = req.method === "POST" && /^\/api\/(?:action|query)(?:\?|$)/.test(pathname);
+  let timeout = setTimeout(() => { fail(new Error("节点 HTTP 通道就绪超时")); }, 10_000);
   const fail = (error: Error) => {
     if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" }).end(error.message);
     else if (!res.writableFinished) res.destroy(error);
@@ -45,7 +46,7 @@ export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req:
         return;
       }
       const value = parse(raw.toString());
-      if (object(value) && value.type === "ready" && !received) { void upload(); return; }
+      if (object(value) && value.type === "ready" && !received) { clearTimeout(timeout); void upload(); return; }
       if (!isReply(value)) throw new Error("无效的设备响应");
       if (value.type === "error") throw new Error(value.message);
       if (value.type === "response") {
@@ -80,7 +81,11 @@ export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req:
     uploading = true;
     try {
       for await (const raw of req) await send(tunnel, Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw)));
-      if (tunnel.readyState === WebSocket.OPEN) await json(tunnel, { type: "end" });
+      if (tunnel.readyState === WebSocket.OPEN) {
+        // 原生操作可能一直等待推理或审批，不能用普通资源的首包期限截断。
+        if (!operation && !received) timeout = setTimeout(() => { fail(new Error("目标响应头超时")); }, 30_000);
+        await json(tunnel, { type: "end" });
+      }
     } catch (error) { if (!ended) fail(error instanceof Error ? error : new Error("上传中断")); }
   }
 }

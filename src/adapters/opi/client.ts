@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import http from "node:http";
 import { WebSocket } from "ws";
 import { MAX_FRAME, json, parse, webSocketUrl } from "../../shared/protocol.ts";
 import { buffer } from "../../shared/sockets.ts";
@@ -50,19 +51,38 @@ export class OpiClient {
     await this.action(ready.catalog, null, AbortSignal.timeout(30_000));
   }
   async action(value: unknown, sessionId: string | null = null, signal?: AbortSignal): Promise<void> {
-    await (await this.post("action", value, sessionId, signal)).body?.cancel();
+    await this.post("action", value, sessionId, signal);
   }
   async query(value: unknown, signal?: AbortSignal): Promise<unknown> {
-    return (await this.post("query", value, null, signal)).json();
+    return JSON.parse(await this.post("query", value, null, signal));
   }
-  private async post(kind: "action" | "query", value: unknown, sessionId: string | null, signal?: AbortSignal): Promise<Response> {
+  private async post(kind: "action" | "query", value: unknown, sessionId: string | null, signal?: AbortSignal): Promise<string> {
     const { id } = await this.ready;
-    const response = await fetch(new URL(`/api/${kind}`, this.target), {
-      method: "POST", headers: { Origin: this.target.origin, "Content-Type": "application/json", "X-Opi-Client": id },
-      body: JSON.stringify({ value, sessionId }), signal: signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal,
+    const combined = signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal;
+    combined.throwIfAborted();
+    const body = JSON.stringify({ value, sessionId });
+    // 托管后端仅监听本机 HTTP。避免 fetch 隐含的 5 分钟响应头期限截断长任务。
+    return new Promise<string>((resolve, reject) => {
+      const request = http.request(new URL(`/api/${kind}`, this.target), {
+        method: "POST", headers: { Origin: this.target.origin, "Content-Type": "application/json", "X-Opi-Client": id }, signal: combined,
+      }, (response) => {
+        void (async () => {
+          const status = response.statusCode;
+          if (status === undefined) { response.destroy(); throw new Error("o-pi HTTP 响应缺少状态码"); }
+          if (kind === "action" && status >= 200 && status < 300) { response.destroy(); resolve(""); return; }
+          const chunks: Buffer[] = [];
+          for await (const raw of response) chunks.push(Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw)));
+          const text = Buffer.concat(chunks).toString("utf8");
+          if (status < 200 || status >= 300) throw new OpiActionError(status, text);
+          resolve(text);
+        })().catch(reject);
+      });
+      const timeout = setTimeout(() => request.destroy(new Error("o-pi HTTP 连接超时")), 10_000);
+      const connected = () => clearTimeout(timeout);
+      request.once("socket", (socket) => { if (socket.connecting) socket.once("connect", connected); else connected(); });
+      request.once("close", connected); request.once("error", reject);
+      request.setTimeout(0); request.end(body);
     });
-    if (!response.ok) throw new OpiActionError(response.status, await response.text());
-    return response;
   }
   /** HTTP 操作完成后，用同一事件连接的 pong 确认此前排队的目录帧已到达。 */
   async synchronize(signal: AbortSignal): Promise<void> {
