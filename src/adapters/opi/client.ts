@@ -4,6 +4,10 @@ import { MAX_FRAME, json, parse, webSocketUrl } from "../../shared/protocol.ts";
 import { buffer } from "../../shared/sockets.ts";
 import { decodeEvent, decodeFrame, type OpiEvent, type OpiFrame } from "./wire.ts";
 
+export class OpiActionError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
 export class OpiClient {
   private ws: WebSocket;
   private controller = new AbortController();
@@ -14,7 +18,7 @@ export class OpiClient {
   readonly ready = this.started.promise;
   readonly closed = this.finished.promise;
   private target: URL;
-  constructor(target: URL, onEvent: (event: OpiEvent) => void, sessionId?: string) {
+  constructor(target: URL, onEvent: (event: OpiEvent) => void, sessionId?: string, observe?: (event: unknown) => void) {
     this.target = target;
     const path = `/api/events${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ""}`;
     this.ws = new WebSocket(webSocketUrl(target.origin, path), { headers: { Origin: target.origin }, maxPayload: MAX_FRAME, perMessageDeflate: false, handshakeTimeout: 10_000 });
@@ -25,6 +29,7 @@ export class OpiClient {
         const delivery = decodeFrame(parse(buffer(raw).toString()));
         if (!delivery) return;
         for (const raw of delivery.events) {
+          observe?.(raw);
           const event = decodeEvent(raw);
           if (!event) continue;
           if (event.type === "client") { clearTimeout(timeout); this.started.resolve({ id: event.id, catalog: delivery.catalog }); }
@@ -39,18 +44,25 @@ export class OpiClient {
       clearTimeout(timeout); this.controller.abort(failure); this.started.reject(failure); this.finished.resolve(failure);
     });
   }
+  get signal(): AbortSignal { return this.controller.signal; }
   async refreshCatalog(): Promise<void> {
     const ready = await this.ready;
     await this.action(ready.catalog, null, AbortSignal.timeout(30_000));
   }
   async action(value: unknown, sessionId: string | null = null, signal?: AbortSignal): Promise<void> {
+    await (await this.post("action", value, sessionId, signal)).body?.cancel();
+  }
+  async query(value: unknown, signal?: AbortSignal): Promise<unknown> {
+    return (await this.post("query", value, null, signal)).json();
+  }
+  private async post(kind: "action" | "query", value: unknown, sessionId: string | null, signal?: AbortSignal): Promise<Response> {
     const { id } = await this.ready;
-    const response = await fetch(new URL("/api/action", this.target), {
+    const response = await fetch(new URL(`/api/${kind}`, this.target), {
       method: "POST", headers: { Origin: this.target.origin, "Content-Type": "application/json", "X-Opi-Client": id },
       body: JSON.stringify({ value, sessionId }), signal: signal ? AbortSignal.any([this.controller.signal, signal]) : this.controller.signal,
     });
-    if (!response.ok) throw new Error(await response.text());
-    await response.body?.cancel();
+    if (!response.ok) throw new OpiActionError(response.status, await response.text());
+    return response;
   }
   /** HTTP 操作完成后，用同一事件连接的 pong 确认此前排队的目录帧已到达。 */
   async synchronize(signal: AbortSignal): Promise<void> {

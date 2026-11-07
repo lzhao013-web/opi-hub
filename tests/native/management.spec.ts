@@ -1,4 +1,21 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
+
+async function newSession(native: Page): Promise<void> {
+  const editor = native.getByRole("textbox", { name: "消息", exact: true }); await expect(editor).toBeVisible();
+  const previous = await editor.elementHandle(); if (!previous) throw new Error("缺少原会话编辑器");
+  const changed = native.waitForResponse((response) => response.url().endsWith("/api/action") && response.request().postData()?.includes('"action":"new"') === true);
+  await native.getByRole("button", { name: "新建会话", exact: true }).click(); await changed;
+  await previous.waitForElementState("hidden"); await previous.dispose(); await expect(editor).toBeVisible();
+}
+
+test.afterEach(async ({ page }, info) => {
+  if (info.status === "passed") return;
+  const value: unknown = await (await page.request.get("/_hub/overview")).json();
+  if (typeof value !== "object" || value === null || !("interactions" in value) || !Array.isArray(value.interactions)) return;
+  for (const item of value.interactions) if (typeof item === "object" && item !== null && "deviceId" in item && "sessionId" in item && "id" in item) {
+    await page.request.post("/_hub/respond", { headers: { Origin: new URL(page.url()).origin }, data: { deviceId: item.deviceId, sessionId: item.sessionId, dialogId: item.id, value: null } });
+  }
+});
 
 test("真实会话直达和后台审批订阅不切换原页面，中心回答由原生后端消费", async ({ page, context }) => {
   const errors: string[] = [];
@@ -10,7 +27,7 @@ test("真实会话直达和后台审批订阅不切换原页面，中心回答�
   const [native] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "打开 o-pi" }).click()]);
   const editor = native.getByRole("textbox", { name: "消息", exact: true });
   await expect(editor).toBeVisible();
-  await native.getByRole("button", { name: "新建会话", exact: true }).click();
+  await newSession(native);
   await native.locator(".session-heading button").click();
   const title = native.getByRole("textbox", { name: "会话名称", exact: true });
   await title.fill("集中审批测试"); await title.press("Enter");
@@ -28,7 +45,7 @@ test("真实会话直达和后台审批订阅不切换原页面，中心回答�
   await editor.press("ControlOrMeta+Enter"); await shell;
   await page.bringToFront();
   await page.locator("#device-nav").getByRole("button", { name: "原生 o-pi", exact: true }).click();
-  await page.locator(".workspace-card").first().click();
+  await page.locator(".workspace-card").filter({ has: page.getByText("workspace", { exact: true }) }).click();
   const row = page.locator(".session-row").filter({ has: page.getByRole("heading", { name: "集中审批测试", exact: true }) });
   await expect(row).toBeVisible();
   await page.getByRole("button", { name: "加载历史会话", exact: true }).click();
@@ -60,7 +77,7 @@ test("原页面关闭后仍能回答未落盘会话的交互", async ({ page, co
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("button", { name: /全部设备/ }).click();
   const [native] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "打开 o-pi" }).click()]);
-  await native.getByRole("button", { name: "新建会话", exact: true }).click();
+  await newSession(native);
   const editor = native.getByRole("textbox", { name: "消息", exact: true });
   await editor.fill("/hub-test-confirm"); await editor.press("ControlOrMeta+Enter");
   await expect(native.getByRole("dialog")).toBeVisible();

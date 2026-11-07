@@ -1,13 +1,14 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocket } from "ws";
-import { fixture, PASSWORD, login, add } from "./helpers.ts";
+import { fixture, PASSWORD, login, add, managedConfig, waitDevices } from "./helpers.ts";
 import { isOpen, json, send } from "../src/shared/protocol.ts";
 import { connected } from "../src/shared/sockets.ts";
 import { startHub } from "../src/hub/server.ts";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { validateNodeConfig, startNode } from "../src/node/agent.ts";
+import { startNode } from "../src/node/agent.ts";
+import { validateNodeConfig } from "../src/node/config.ts";
 
 let env: Awaited<ReturnType<typeof fixture>>;
 before(async () => { env = await fixture(); });
@@ -81,9 +82,9 @@ describe("独立多设备入口", () => {
       try { await assert.rejects(connected(ws)); } finally { ws.terminate(); }
     }
   });
-  test("节点配置不允许访问任意网络目标", () => {
-    assert.throws(() => validateNodeConfig({ ...env.a.config, target: "http://192.168.1.1" }), /回环/);
-    assert.throws(() => validateNodeConfig({ ...env.a.config, target: "http://127.0.0.1:19198/path" }), /地址/);
+  test("节点配置只接受托管命令，拒绝旧 target 和无效参数", () => {
+    assert.throws(() => validateNodeConfig({ ...env.a.config, target: "http://192.168.1.1" }), /不支持.*target/);
+    assert.throws(() => validateNodeConfig({ ...env.a.config, command: [] }), /command/);
   });
   test("数据通道拒绝跨设备认领和重复使用", async () => {
     const entry = await add(env.hub.url, env.cookie, "独立通道测试");
@@ -136,19 +137,19 @@ describe("独立多设备入口", () => {
       await delay(25);
     }
   });
-  test("设备重连保留身份，离线不关闭本机服务", async () => {
+  test("节点关闭后停止托管服务，再启动可恢复设备身份", async () => {
     await env.agentA.close();
     assert.equal((await fetch(`${env.fakeA.url}/health`)).status, 200);
-    const reconnect = startNode({ ...env.a.config, target: env.fakeA.url }, () => {});
+    const reconnect = startNode(managedConfig(env.a.config, env.fakeA.url, env.directory), () => {});
     try {
-      await reconnect.ready;
+      await reconnect.ready; await waitDevices(env.hub.url, env.cookie, 2);
       const response = await fetch(`${env.hub.url}/n/${env.a.id}/`, { headers: authenticated() });
       assert.equal(response.status, 200); await response.body?.cancel();
     } finally { await reconnect.close(); }
     const offline = await fetch(`${env.hub.url}/n/${env.a.id}/`, { headers: authenticated() });
     assert.equal(offline.status, 502);
   });
-  test("移除设备撤销凭据并关闭连接，不停止本机服务", async () => {
+  test("移除设备撤销凭据并结束托管连接，不影响独立进程", async () => {
     const ws = viewer(env.b.id);
     const message = new Promise((resolve) => ws.once("message", resolve));
     await connected(ws); await message;

@@ -2,6 +2,9 @@ import { ManagementView } from "./management.js";
 import { HistoryStore } from "./history.js";
 import { Navigation, workspaceName } from "./navigation.js";
 import { WorkspaceViews } from "./views.js";
+import { CreateSessionView } from "./create-session.js";
+import { BackendControls, backendLabel } from "./backend.js";
+import { ScheduleView } from "./schedules.js";
 
 const $ = (id) => {
   const element = document.getElementById(id);
@@ -9,7 +12,7 @@ const $ = (id) => {
   return element;
 };
 let devices = [];
-let overview = { devices: [], workspaces: [], sessions: [], interactions: [] };
+let overview = { devices: [], workspaces: [], sessions: [], interactions: [], creations: [] };
 let view = "overview";
 let scope = null;
 let removing = null;
@@ -20,6 +23,9 @@ const management = new ManagementView(request, refresh);
 const history = new HistoryStore(request, () => { if (authenticated) render(); });
 const navigation = new Navigation(selectScope);
 const views = new WorkspaceViews(history, selectScope);
+const backendControls = new BackendControls(request, refresh);
+const schedules = new ScheduleView(request);
+const creator = new CreateSessionView(request, refresh, () => { scope = null; view = "interactions"; render(); });
 const text = (id, value) => { $(id).textContent = value; };
 function message(id, value) { text(id, value); $(id).hidden = !value; }
 async function request(url, options = {}) {
@@ -32,8 +38,8 @@ async function request(url, options = {}) {
   return value;
 }
 function showLogin() {
-  authenticated = false; pendingRead++; clearTimeout(timer); management.clear(); history.clear(); views.clear();
-  overview = { devices: [], workspaces: [], sessions: [], interactions: [] }; devices = []; scope = null; view = "overview";
+  authenticated = false; pendingRead++; clearTimeout(timer); management.clear(); history.clear(); views.clear(); creator.clear(); backendControls.clear(); schedules.clear();
+  overview = { devices: [], workspaces: [], sessions: [], interactions: [], creations: [] }; devices = []; scope = null; view = "overview";
   $("workspace").hidden = true; $("login").hidden = false;
   for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
   $("password").focus();
@@ -60,11 +66,6 @@ function element(tag, className, content) {
   if (content !== undefined) node.textContent = content;
   return node;
 }
-function state(device) {
-  if (!device.connected) return { name: "离线", className: "", detail: "等待设备连接" };
-  if (!device.report) return { name: "连接中", className: "waiting", detail: "正在检查本机服务" };
-  return device.report.ready ? { name: "在线", className: "online", detail: "原生 o-pi 界面" } : { name: "Web 服务未就绪", className: "waiting", detail: "请启动本机 o-pi Web" };
-}
 function selectScope(value) {
   scope = value; view = value.cwd === null ? "device" : "workspace";
   $("session-search").value = ""; render();
@@ -77,14 +78,18 @@ function render() {
   text("device-count", String(devices.length)); text("interaction-count", String(overview.interactions.length));
   text("summary-text", `${online} 台在线 · ${running} 个运行 · ${overview.interactions.length} 个待处理交互`);
   const chosen = devices.find((device) => device.id === scope?.deviceId);
-  const titles = { overview: "概览", device: chosen?.name, workspace: scope?.cwd ? workspaceName(scope.cwd) : "工作区", history: "查找历史", interactions: "待处理交互", devices: "你的设备" };
-  const descriptions = { overview: "关注正在进行的工作，不展开全部历史。", device: "选择工作区后浏览会话，历史按需读取。", workspace: "当前工作区的会话与按需历史。", history: "明确查询时才读取历史，不在首页铺开。", interactions: "集中处理各设备的审批、确认和输入。", devices: "管理设备连接，或打开完整的原生 o-pi 界面。" };
+  const titles = { overview: "概览", device: chosen?.name, workspace: scope?.cwd ? workspaceName(scope.cwd) : "工作区", history: "查找历史", schedules: "计划任务", interactions: "待处理交互", devices: "你的设备" };
+  const descriptions = { overview: "关注正在进行的工作，不展开全部历史。", device: "选择工作区后浏览会话，历史按需读取。", workspace: "当前工作区的会话与按需历史。", history: "明确查询时才读取历史，不在首页铺开。", schedules: "预约设备上的代理任务，执行记录与会话分开管理。", interactions: "集中处理各设备的审批、确认和输入。", devices: "管理设备连接，或打开完整的原生 o-pi 界面。" };
   text("heading", titles[view]); text("breadcrumb", chosen && view === "workspace" ? `${chosen.name} / ${titles[view]}` : titles[view]); text("page-description", descriptions[view]);
   $("selected-workspace").hidden = view !== "workspace"; text("selected-workspace", scope?.cwd ?? "");
-  for (const [name, id] of [["overview", "overview-nav"], ["history", "history-nav"], ["interactions", "all-interactions"], ["devices", "all-devices"]]) $(id).classList.toggle("selected", !scope && view === name);
-  for (const [name, id] of [["overview", "overview-view"], ["device", "device-view"], ["workspace", "workspace-view"], ["history", "history-view"], ["interactions", "interactions"], ["devices", "devices"]]) $(id).hidden = view !== name;
+  for (const [name, id] of [["overview", "overview-nav"], ["schedules", "schedules-nav"], ["history", "history-nav"], ["interactions", "all-interactions"], ["devices", "all-devices"]]) $(id).classList.toggle("selected", !scope && view === name);
+  for (const [name, id] of [["overview", "overview-view"], ["device", "device-view"], ["workspace", "workspace-view"], ["history", "history-view"], ["schedules", "schedules-view"], ["interactions", "interactions"], ["devices", "devices"]]) $(id).hidden = view !== name;
   navigation.render(overview, scope); views.render(overview, view, scope, $("session-search").value);
-  management.render(overview, scope?.deviceId ?? null, view);
+  management.render(overview, scope?.deviceId ?? null, view); creator.update(overview); schedules.update(overview, view === "schedules");
+  $("new-session").hidden = view === "schedules"; $("add-schedule").hidden = view !== "schedules"; $("add-schedule").disabled = !devices.length;
+  const attention = overview.scheduleSummary?.unknown ?? 0; const scheduleError = overview.scheduleSummary?.error;
+  text("schedule-attention", attention ? String(attention) : ""); $("schedule-alert").hidden = !attention && !scheduleError;
+  text("schedule-alert", scheduleError ? `计划任务需要检查：${scheduleError}` : `${attention} 个计划运行结果待核对，点击查看。`);
   const list = $("devices");
   const fingerprint = JSON.stringify(devices);
   if (list.dataset.fingerprint !== fingerprint) {
@@ -94,7 +99,7 @@ function render() {
   $("empty").hidden = view !== "devices" || devices.length !== 0;
 }
 function card(device) {
-  const status = state(device);
+  const status = backendLabel(device);
   const card = element("article", "device"); card.dataset.deviceId = device.id;
   const heading = element("div", "device-heading");
   const icon = element("div", "monitor-icon"); icon.setAttribute("aria-hidden", "true");
@@ -108,7 +113,8 @@ function card(device) {
   const details = element("dl", "device-details");
   const info = [
     ["系统", device.report ? `${device.report.platform} · ${device.report.hostname}` : "尚未连接"],
-    ["本机服务", device.report?.target ?? "连接后显示"],
+    ["托管后端", device.report?.backend.state === "running" ? device.report.backend.url : status.name],
+    ["进程 PID", device.report?.backend.state === "running" ? String(device.report.backend.pid) : "—"],
     ["添加时间", new Date(device.createdAt).toLocaleDateString()],
   ];
   for (const [label, value] of info) details.append(element("dt", "", label), element("dd", "", value));
@@ -116,8 +122,8 @@ function card(device) {
   const open = element("a", `primary${device.connected && device.report?.ready ? "" : " disabled"}`, "打开 o-pi ↗");
   open.href = `/n/${device.id}/`; open.target = "_blank"; open.rel = "noopener";
   if (!device.connected || !device.report?.ready) { open.setAttribute("aria-disabled", "true"); open.removeAttribute("href"); }
-  actions.append(element("span", "", status.detail), open);
-  card.append(heading, details, actions);
+  actions.append(element("span", "", status.detail), open, backendControls.button(device));
+  card.append(heading, details, actions); backendControls.details(card, device);
   return card;
 }
 $("login-form").addEventListener("submit", async (event) => {
@@ -130,7 +136,11 @@ $("logout").addEventListener("click", async () => {
   try { await request("/_hub/logout", { method: "POST", body: "{}" }); showLogin(); }
   catch (error) { message("workspace-error", error.message); }
 });
-for (const [name, id] of [["overview", "overview-nav"], ["history", "history-nav"], ["interactions", "all-interactions"], ["devices", "all-devices"]]) $(id).addEventListener("click", () => { scope = null; view = name; render(); });
+for (const [name, id] of [["overview", "overview-nav"], ["schedules", "schedules-nav"], ["history", "history-nav"], ["interactions", "all-interactions"], ["devices", "all-devices"]]) $(id).addEventListener("click", () => { scope = null; view = name; render(); });
+$("new-session").addEventListener("click", () => creator.open(scope));
+$("add-schedule").addEventListener("click", () => schedules.open(scope));
+$("schedule-workspace").addEventListener("click", () => schedules.open(scope));
+$("schedule-alert").addEventListener("click", () => $("schedules-nav").click());
 $("session-search").addEventListener("input", render);
 $("load-history").addEventListener("click", () => {
   if (!scope) return;

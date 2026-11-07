@@ -40,12 +40,12 @@ test("登录、配置签发、双设备 GUI 和审批互不串线", async ({ pag
     await tab.reload(); await expect(tab.locator("#name")).toHaveText(name);
   }
   await tabA.close(); await tabB.close();
-  await page.screenshot({ path: test.info().outputPath("devices.png"), fullPage: true });
+  await page.screenshot({ path: test.info().outputPath("devices.png"), fullPage: true, animations: "disabled" });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "切换主题", exact: true }).click();
   await page.getByRole("button", { name: "切换主题", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.screenshot({ path: test.info().outputPath("devices-dark.png"), fullPage: true });
+  await page.screenshot({ path: test.info().outputPath("devices-dark.png"), fullPage: true, animations: "disabled" });
   await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole("button", { name: "退出", exact: true }).click();

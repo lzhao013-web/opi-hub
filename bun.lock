@@ -5,6 +5,7 @@
     "": {
       "name": "opi-hub",
       "dependencies": {
+        "@js-temporal/polyfill": "^0.5.1",
         "ws": "^8.22.1",
       },
       "devDependencies": {
@@ -16,11 +17,15 @@
     },
   },
   "packages": {
+    "@js-temporal/polyfill": ["@js-temporal/polyfill@0.5.1", "https://registry.npmmirror.com/@js-temporal/polyfill/-/polyfill-0.5.1.tgz", { "dependencies": { "jsbi": "^4.3.0" } }, "sha512-hloP58zRVCRSpgDxmqCWJNlizAlUgJFqG2ypq79DCvyv9tHjRYMDOcPFjzfl/A1/YxDvRCZz8wvZvmapQnKwFQ=="],
+
     "@playwright/test": ["@playwright/test@1.65.0", "https://registry.npmmirror.com/@playwright/test/-/test-1.65.0.tgz", { "dependencies": { "playwright": "1.65.0" }, "bin": { "playwright": "cli.js" } }, "sha512-iGURLGuKDLakSEl7Pgfv8h7f+XLT+V861Wfhz0zlEl5nyFuKUopdkFBPKqTllTUp06aOwPuH8iuUEb3yp3MpbQ=="],
 
     "@types/node": ["@types/node@24.19.2", "https://registry.npmmirror.com/@types/node/-/node-24.19.2.tgz", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-93d49wCWJkCyN87MxLpNN6KXPCwFw7bVUg79mGUV1OS40JGWwVCr8n61DXCSqz7CV6/VfPkb7xec7uP2M+QHWQ=="],
 
     "@types/ws": ["@types/ws@8.18.2", "https://registry.npmmirror.com/@types/ws/-/ws-8.18.2.tgz", { "dependencies": { "@types/node": "*" } }, "sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w=="],
+
+    "jsbi": ["jsbi@4.3.2", "https://registry.npmmirror.com/jsbi/-/jsbi-4.3.2.tgz", {}, "sha512-9fqMSQbhJykSeii05nxKl4m6Eqn2P6rOlYiS+C5Dr/HPIU/7yZxu5qzbs40tgaFORiw2Amd0mirjxatXYMkIew=="],
 
     "playwright": ["playwright@1.65.0", "https://registry.npmmirror.com/playwright/-/playwright-1.65.0.tgz", { "dependencies": { "playwright-core": "1.65.0" }, "bin": { "playwright": "cli.js" } }, "sha512-F3AMWcR44qMBt4kq+6Kb6mX7bjGXshktKFOPULd7reED6ZJWevjbNRqysP7q+AATE9kdPEZBibex1BYsvpVoeA=="],
 

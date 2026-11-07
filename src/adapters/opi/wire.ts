@@ -10,7 +10,7 @@ export type OpiEvent = { type: "client"; id: string } | { type: "selected"; sess
   { type: "sessions"; value: History[] } | { type: "sessionsPatch"; value: DirectoryPatch } |
   { type: "workspaces"; value: Workspace[] } | { type: "workspacesPatch"; value: DirectoryPatch<Workspace> } |
   { type: "activity"; value: Activity[] } | { type: "dialogs"; value: unknown[] } |
-  { type: "feedback"; message: string; tone: string };
+  { type: "feedback"; message: string; tone: string } | { type: "sessionsDeleted"; ids: string[] };
 const str = (value: unknown): value is string => typeof value === "string";
 function history(value: unknown): value is History {
   return object(value) && str(value.path) && str(value.cwd) && str(value.title) && str(value.modified);
@@ -52,6 +52,7 @@ export function decodeEvent(value: unknown): OpiEvent | undefined {
     case "sessionsPatch": if (patch(value.value, history)) return { type: "sessionsPatch", value: value.value }; break;
     case "workspaces": if (Array.isArray(value.value) && value.value.every(workspace)) return { type: "workspaces", value: value.value }; break;
     case "workspacesPatch": if (patch(value.value, workspace)) return { type: "workspacesPatch", value: value.value }; break;
+    case "sessionsDeleted": if (Array.isArray(value.ids) && value.ids.every(str)) return { type: "sessionsDeleted", ids: value.ids }; break;
     case "activity": if (Array.isArray(value.value) && value.value.every(activity)) return { type: "activity", value: value.value }; break;
     case "dialogs": if (Array.isArray(value.value)) return { type: "dialogs", value: value.value }; break;
     case "feedback": if (str(value.message) && str(value.tone)) return { type: "feedback", message: value.message, tone: value.tone }; break;

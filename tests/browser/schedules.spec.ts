@@ -1,0 +1,34 @@
+import { test, expect } from "@playwright/test";
+
+test("计划任务可按时区预约、暂停手动运行、集中审批并保留记录", async ({ page }, info) => {
+  test.setTimeout(45_000);
+  const name = `界面计划 ${info.project.name}`;
+  await page.goto("/"); await page.getByLabel("中心密码").fill("test-password-1234"); await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: "计划任务", exact: true }).click(); await page.getByRole("button", { name: "新建计划", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "新建计划任务", exact: true });
+  await dialog.getByLabel("计划名称", { exact: true }).fill(name); await dialog.getByLabel("计划设备", { exact: true }).selectOption({ label: "开发台式机" });
+  await dialog.getByLabel("任务目录", { exact: true }).fill("/fixture/设备 A/other"); await dialog.getByLabel("任务描述", { exact: true }).fill("ASK 检查测试并生成报告");
+  await dialog.getByLabel("执行频率", { exact: true }).selectOption("weekly"); await dialog.getByLabel("时区", { exact: true }).fill("UTC");
+  await dialog.getByLabel("执行时间", { exact: true }).fill("09:30"); await dialog.getByLabel("一", { exact: true }).uncheck(); await dialog.getByLabel("五", { exact: true }).check();
+  await dialog.getByRole("button", { name: "保存计划", exact: true }).click();
+  const plan = page.locator(".plan-card").filter({ has: page.getByRole("heading", { name, exact: true }) });
+  await expect(plan).toContainText("每周五 09:30 · UTC"); await plan.getByRole("button", { name: "暂停计划", exact: true }).click(); await expect(plan).toContainText("已暂停");
+  await plan.getByRole("button", { name: "立即执行", exact: true }).click(); await page.getByRole("dialog", { name: "确认计划操作", exact: true }).getByRole("button", { name: "确认操作", exact: true }).click();
+  const run = page.locator(".run-card").filter({ has: page.getByRole("heading", { name, exact: true }) });
+  await expect(run).toContainText("等待交互");
+  await page.getByRole("button", { name: /待处理交互/ }).click();
+  const question = page.locator(".interaction").filter({ has: page.getByRole("heading", { name: "计划任务确认", exact: true }) }); await expect(question).toBeVisible();
+  await question.getByRole("button", { name: "确认", exact: true }).click(); await expect(question).toHaveCount(0);
+  await page.getByRole("button", { name: "计划任务", exact: true }).click(); await expect(run).toContainText("已结束");
+  await expect(plan).toContainText("已暂停"); await expect(run.getByRole("link", { name: "查看会话" })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("schedules.png"), fullPage: true, animations: "disabled" });
+  await plan.getByRole("button", { name: "删除计划", exact: true }).click(); await page.getByRole("dialog", { name: "确认计划操作", exact: true }).getByRole("button", { name: "确认操作", exact: true }).click();
+  await expect(plan).toHaveCount(0); await expect(run).toContainText(name);
+  await page.getByRole("button", { name: "新建计划", exact: true }).click();
+  await dialog.getByLabel("计划名称", { exact: true }).fill("不接受 Shell"); await dialog.getByLabel("计划设备", { exact: true }).selectOption({ label: "开发台式机" });
+  await dialog.getByLabel("任务目录", { exact: true }).fill("/fixture/设备 A/other"); await dialog.getByLabel("任务描述", { exact: true }).fill("!echo unsafe");
+  await dialog.getByLabel("预约时间", { exact: true }).fill(new Date(Date.now() + 3600_000).toISOString().slice(0, 19)); await dialog.getByLabel("时区", { exact: true }).fill("UTC");
+  await dialog.getByRole("button", { name: "保存计划", exact: true }).click(); await expect(dialog.getByRole("alert")).toContainText("自然语言");
+  await dialog.getByRole("button", { name: "关闭计划任务", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

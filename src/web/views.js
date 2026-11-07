@@ -1,5 +1,6 @@
 import { create, renderSessionList } from "./management.js";
 import { workspaceName } from "./navigation.js";
+import { backendLabel } from "./backend.js";
 
 const active = (session) => ["running", "waiting", "loading"].includes(session.state);
 export class WorkspaceViews {
@@ -28,7 +29,7 @@ export class WorkspaceViews {
       renderSessionList(document.getElementById("sessions"), sessions.filter((item) => !query || item.title.toLocaleLowerCase().includes(query)), devices, query ? "没有匹配的会话。" : "暂无运行会话。需要时可加载这个工作区的历史。");
       const pending = this.history.pending.has(scope.deviceId); const loaded = this.history.entries.has(scope.deviceId);
       const button = document.getElementById("load-history"); const device = devices.get(scope.deviceId);
-      button.disabled = !device?.connected || device.management.state !== "ready";
+      button.disabled = !device?.connected || !device.report?.ready || device.management.state !== "ready";
       button.textContent = pending ? "取消读取" : loaded ? "刷新历史" : "加载历史会话";
       const status = document.getElementById("history-status");
       status.classList.toggle("error", this.history.errors.has(scope.deviceId));
@@ -51,7 +52,7 @@ export class WorkspaceViews {
       heading.append(create("span", `status-dot${device.connected ? " online" : ""}`), create("strong", "", device.name));
       const running = data.sessions.filter((item) => item.deviceId === device.id && item.state === "running").length;
       const waiting = data.interactions.filter((item) => item.deviceId === device.id).length;
-      card.append(heading, create("span", "muted", device.connected ? device.report?.ready ? `${running} 个运行 · ${waiting} 个待处理` : "Web 服务未就绪" : "离线"));
+      card.append(heading, create("span", "muted", device.report?.ready ? `${running} 个运行 · ${waiting} 个待处理` : backendLabel(device).name));
       card.addEventListener("click", () => this.select({ deviceId: device.id, cwd: null })); root.append(card);
     }
   }
@@ -79,7 +80,7 @@ export class WorkspaceViews {
     if ([...root.options].some((option) => option.value === value)) root.value = value;
   }
   async startSearch(data, query, deviceId) {
-    const ids = data.devices.filter((device) => (!deviceId || device.id === deviceId) && device.connected && device.management.state === "ready").map((device) => device.id);
+    const ids = data.devices.filter((device) => (!deviceId || device.id === deviceId) && device.connected && device.report?.ready && device.management.state === "ready").map((device) => device.id);
     this.search = { query: query.trim().toLocaleLowerCase(), ids };
     await Promise.all(ids.map((id) => this.history.load(id)));
   }

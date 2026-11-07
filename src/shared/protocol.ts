@@ -3,7 +3,6 @@ import { WebSocket } from "ws";
 export const MAX_FRAME = 16 * 1024 * 1024;
 export type Headers = Record<string, string>;
 export type OpenRequest = { type: "open"; id: string; kind: "http" | "websocket"; method: string; path: string; headers: Headers };
-export type NodeReport = { type: "status"; ready: boolean; hostname: string; platform: string; target: string };
 export type HttpReply = { type: "response"; status: number; headers: Headers } | { type: "end" } | { type: "error"; message: string };
 
 export function object(value: unknown): value is Record<string, unknown> {
@@ -17,11 +16,6 @@ export function isOpen(value: unknown): value is OpenRequest {
   return object(value) && value.type === "open" && typeof value.id === "string" &&
     (value.kind === "http" || value.kind === "websocket") && typeof value.method === "string" &&
     typeof value.path === "string" && value.path.startsWith("/") && !/[\r\n]/.test(value.path) && headers(value.headers);
-}
-export function isReport(value: unknown): value is NodeReport {
-  return object(value) && value.type === "status" && typeof value.ready === "boolean" &&
-    typeof value.hostname === "string" && typeof value.platform === "string" && typeof value.target === "string" &&
-    value.hostname.length < 256 && value.platform.length < 64 && value.target.length < 2048;
 }
 export function isReply(value: unknown): value is HttpReply {
   return object(value) && (value.type === "end" ||

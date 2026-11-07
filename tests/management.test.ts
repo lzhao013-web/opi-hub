@@ -1,7 +1,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
-import { fixture, login } from "./helpers.ts";
+import { fixture, login, managedConfig } from "./helpers.ts";
 import { WebSocket } from "ws";
 import { connected } from "../src/shared/sockets.ts";
 import { startHub } from "../src/hub/server.ts";
@@ -101,7 +101,7 @@ describe("跨设备管理", () => {
       assert.equal((await request).status, 409);
       await until(() => env.fakeA.historyClients(), (count) => count === 0);
     } finally { release(); }
-    env.agentA = startNode({ ...env.a.config, target: env.fakeA.url }, () => {}); await env.agentA.ready;
+    env.agentA = startNode(managedConfig(env.a.config, env.fakeA.url, env.directory), () => {}); await env.agentA.ready;
     await until(overview, (state) => state.interactions.length === 2);
     assert.notEqual(before, await connectionId());
   });

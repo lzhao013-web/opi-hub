@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
-import { isReport, json, MAX_FRAME, parse, type NodeReport, type OpenRequest } from "../shared/protocol.ts";
+import { json, MAX_FRAME, parse, type OpenRequest } from "../shared/protocol.ts";
+import { isReport, isBackendReply, type NodeReport } from "../shared/backend.ts";
 import { isManagementMessage, isRespondReply, isHistoryReply, type HistoryEntry, type HistoryCommand, type CancelHistory, type ManagementState, type RespondCommand } from "../shared/management.ts";
 import { buffer } from "../shared/sockets.ts";
+import { isSessionResponse } from "../shared/session-creation.ts";
+import { SessionRequests } from "./session-requests.ts";
+import { isTaskReply, blockingTask, type TaskInput, type TaskRecord } from "../shared/tasks.ts";
 
 interface Connection { id: string; socket: WebSocket; report?: NodeReport; management?: ManagementState; seen: number }
 interface HistoryPending { node: Connection; deviceId: string; finish: (result: HistoryEntry[] | Error) => void }
@@ -15,12 +19,14 @@ export class Nodes {
   private responses = new Map<string, ResponsePending>();
   private histories = new Map<string, HistoryPending>();
   private answering = new Set<string>();
+  private sessionRequests = new SessionRequests();
   private timer = setInterval(() => this.heartbeat(), 15_000);
   constructor() { this.timer.unref(); }
   status(id: string): { connected: false } | { connected: true; connectionId: string; report?: NodeReport } {
     const node = this.connections.get(id);
-    return node ? { connected: true, connectionId: node.id, report: node.report } : { connected: false };
+    return node ? { connected: true, connectionId: this.identity(node), report: node.report } : { connected: false };
   }
+  private identity(node: Connection): string { return `${node.id}:${node.report?.backend.generation ?? 0}`; }
   management(id: string): ManagementState | undefined { return this.connections.get(id)?.management; }
   async respond(deviceId: string, sessionId: string, dialogId: string, value: string | null, signal: AbortSignal): Promise<void> {
     const node = this.connections.get(deviceId);
@@ -47,13 +53,15 @@ export class Nodes {
     if (!node || node.management?.state !== "ready") throw new Error("设备会话管理尚未连接");
     signal.throwIfAborted();
     if ([...this.histories.values()].some((pending) => pending.deviceId === deviceId)) throw new Error("此设备的历史正在读取，请稍后重试");
-    const id = randomUUID();
+    const id = randomUUID(); const connectionId = this.identity(node);
     return new Promise<{ connectionId: string; entries: HistoryEntry[] }>((resolve, reject) => {
       const cancel = () => { if (node.socket.readyState === WebSocket.OPEN) void json(node.socket, { type: "cancelHistory", id } satisfies CancelHistory).catch(() => node.socket.terminate()); };
       const finish = (result: HistoryEntry[] | Error) => {
         if (!this.histories.delete(id)) return;
         clearTimeout(timer); signal.removeEventListener("abort", abort);
-        if (result instanceof Error) { cancel(); reject(result); } else resolve({ connectionId: node.id, entries: result });
+        if (result instanceof Error) { cancel(); reject(result); }
+        else if (connectionId !== this.identity(node)) reject(new Error("后端已变化，历史查询结果已失效"));
+        else resolve({ connectionId, entries: result });
       };
       const abort = () => finish(new Error("历史查询已取消"));
       const timer = setTimeout(() => finish(new Error("历史查询超时")), 35_000);
@@ -61,6 +69,36 @@ export class Nodes {
       void json(node.socket, { type: "history", id } satisfies HistoryCommand).catch((error: unknown) => finish(error instanceof Error ? error : new Error("历史查询失败")));
     });
   }
+  private sessionConnection(deviceId: string): Connection {
+    const node = this.connections.get(deviceId);
+    if (!node || node.management?.state !== "ready" || !node.report?.ready || node.report.backend.state !== "running") throw new Error("托管后端的会话管理尚未就绪");
+    return node;
+  }
+  async directories(deviceId: string, path: string, signal: AbortSignal) {
+    const node = this.sessionConnection(deviceId);
+    const connectionId = this.identity(node);
+    const listing = await this.sessionRequests.directories(deviceId, node.socket, path, signal);
+    if (connectionId !== this.identity(node)) throw new Error("后端已变化，目录查询结果已失效");
+    return { ...listing, connectionId };
+  }
+  create(deviceId: string, creationId: string, path: string, signal: AbortSignal) { return this.sessionRequests.create(deviceId, this.sessionConnection(deviceId).socket, creationId, path, signal); }
+  restartBackend(deviceId: string, connectionId: string, signal: AbortSignal): Promise<void> {
+    const node = this.connections.get(deviceId);
+    if (!node?.report) return Promise.reject(new Error("设备已离线或尚未报告状态"));
+    if (connectionId !== this.identity(node)) return Promise.reject(new Error("设备或后端已变化，请刷新后重新确认"));
+    return this.sessionRequests.restart(deviceId, node.socket, node.report.backend.generation, signal);
+  }
+  task(id: string, runId: string): TaskRecord | undefined { const state = this.management(id); return state?.state === "ready" ? state.tasks.find((task) => task.id === runId) : undefined; }
+  taskOnline(id: string): boolean { const node = this.connections.get(id); return !!node?.report?.ready && node.report.backend.state === "running" && node.management?.state === "ready"; }
+  taskAvailability(id: string): string | null {
+    const state = this.management(id);
+    if (!this.taskOnline(id) || state?.state !== "ready") return "设备离线或托管后端未就绪";
+    if (state.tasks.some((task) => blockingTask(task.state)) || state.creations.some((creation) => creation.state === "creating")) return "设备仍有计划运行或会话创建未结束";
+    return null;
+  }
+  startTask(deviceId: string, task: TaskInput, signal: AbortSignal) { return this.sessionRequests.startTask(deviceId, this.sessionConnection(deviceId).socket, task, signal); }
+  cancelTask(deviceId: string, runId: string, signal: AbortSignal) { return this.sessionRequests.taskAction(deviceId, this.sessionConnection(deviceId).socket, "cancelTask", runId, signal); }
+  acknowledgeTask(deviceId: string, runId: string, signal: AbortSignal) { return this.sessionRequests.taskAction(deviceId, this.sessionConnection(deviceId).socket, "acknowledgeTask", runId, signal); }
   register(id: string, socket: WebSocket): void {
     this.disconnect(id);
     const node: Connection = { id: randomUUID(), socket, seen: Date.now() };
@@ -70,8 +108,15 @@ export class Nodes {
       try {
         if (binary || buffer(raw).byteLength > MAX_FRAME) throw new Error("Invalid report");
         const value = parse(raw.toString());
-        if (isReport(value)) node.report = value;
+        if (isReport(value)) {
+          if (value.backend.state !== "running" || node.report && node.report.backend.generation !== value.backend.generation) {
+            this.sessionRequests.invalidateReads(id);
+            for (const pending of [...this.histories.values()]) if (pending.deviceId === id) pending.finish(new Error("托管后端已变化，历史查询已取消"));
+          }
+          node.report = value;
+        }
         else if (isManagementMessage(value)) node.management = value.value;
+        else if (isSessionResponse(value) || isBackendReply(value) || isTaskReply(value)) this.sessionRequests.receive(node.socket, value);
         else if (isHistoryReply(value)) {
           const pending = this.histories.get(value.id);
           if (pending?.node === node) pending.finish(value.ok ? value.entries : new Error(value.error));
@@ -137,6 +182,7 @@ export class Nodes {
     this.release(id);
   }
   private release(id: string): void {
+    this.sessionRequests.release(id);
     for (const pending of [...this.histories.values()]) if (pending.deviceId === id) pending.finish(new Error("设备连接中断，历史查询已取消"));
     for (const pending of [...this.responses.values()]) if (pending.deviceId === id) pending.finish(new Error("设备连接中断，请检查交互是否已处理"));
     for (const pending of [...this.pending.values()]) if (pending.deviceId === id) pending.reject(new Error("设备已离线"));

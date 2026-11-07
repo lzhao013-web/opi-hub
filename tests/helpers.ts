@@ -8,9 +8,12 @@ import { startHub } from "../src/hub/server.ts";
 import { startNode } from "../src/node/agent.ts";
 import { Store } from "../src/hub/store.ts";
 import { object } from "../src/shared/protocol.ts";
+import type { NodeConfig } from "../src/node/config.ts";
+import { setTimeout as delay } from "node:timers/promises";
+import { FakeExecution } from "./fake-execution.ts";
 
 export const PASSWORD = "test-password-1234";
-const html = `<!doctype html><html><head><meta charset="utf-8"><title>o-pi fixture</title></head><body><h1 id="name">连接中</h1><p id="selected-session"></p><p id="result"></p><p id="socket"></p><img id="preview" alt="文件预览"><form><input id="prompt" aria-label="消息"><button>发送</button></form><button id="approve">允许</button><button id="create-dialog">创建审批</button><button id="create-input">创建输入</button><p id="approval"></p><script type="module" src="./app.js"></script></body></html>`;
+const html = `<!doctype html><html><head><meta charset="utf-8"><title>o-pi fixture</title></head><body><h1 id="name">连接中</h1><p id="selected-session"></p><p id="selected-cwd"></p><p id="result"></p><p id="socket"></p><img id="preview" alt="文件预览"><form><input id="prompt" aria-label="消息"><button>发送</button></form><button id="approve">允许</button><button id="create-dialog">创建审批</button><button id="create-input">创建输入</button><p id="approval"></p><script type="module" src="./app.js"></script></body></html>`;
 const app = `
 const socket = new WebSocket(location.origin.replace(/^http/, 'ws') + '/api/events');
 let client;
@@ -19,6 +22,7 @@ socket.onmessage = async (event) => {
  for (const item of value.events || []) {
   if (item.type === 'selected') {
    const field = document.querySelector('#selected-session'); field.textContent = item.session?.id || '';
+   document.querySelector('#selected-cwd').textContent = item.session?.cwd || '';
    field.dataset.seen = (field.dataset.seen || '') + (item.session?.id ? item.session.id + ',' : '');
   }
  }
@@ -53,12 +57,14 @@ document.querySelector('#create-dialog').onclick = async () => {
 `;
 interface FixtureHistory { path: string; cwd: string; title: string; modified: string }
 interface FixtureActivity extends FixtureHistory { sessionId: string; state: "idle" | "waiting" | "running" }
-interface FixtureClient { ws: WebSocket; session: string | null; sequence: number; all: boolean; acknowledgements: number; historyQuery: boolean }
+interface FixtureClient { ws: WebSocket; session: string | null; sequence: number; all: boolean; acknowledgements: number; historyQuery: boolean; purpose: string | null }
 export async function fakeOpi(name: string) {
   const clients = new Map<string, FixtureClient>();
   let leaked = false;
   let catalogReads = 0;
   let historyGate: Promise<void> | undefined;
+  let directoryGate: Promise<void> | undefined;
+  let newCalls = 0; let workspaceCalls = 0; let directoryReads = 0;
   const cwd = `/fixture/${name}`;
   const history: FixtureHistory[] = [
     { path: `${cwd}/idle.jsonl`, cwd, title: `${name} 的空闲会话`, modified: "2026-11-07T10:00:00.000Z" },
@@ -68,6 +74,9 @@ export async function fakeOpi(name: string) {
   const idle = history[0]; const waiting = history[1];
   if (!idle || !waiting) throw new Error("Missing fixture history");
   const activity: FixtureActivity[] = [ { ...idle, sessionId: "runtime-1", state: "idle" }, { ...waiting, sessionId: "runtime-2", state: "waiting" } ];
+  const directoryPaths = new Set(["/", "/fixture", cwd, `${cwd}/other`, `${cwd}/新项目`, `${cwd}/trust`, `${cwd}/denied`]);
+  const trusted = new Set<string>();
+  const startup = new Map<string, { finish(): void }>();
   const dialogs = new Map<string, unknown[]>();
   const hiddenActivity = new Set<string>();
   const answers: { sessionId: string; dialogId: string; value: unknown }[] = [];
@@ -79,13 +88,26 @@ export async function fakeOpi(name: string) {
     return current ? { id: current.sessionId, cwd: current.cwd, path: current.path } : null;
   };
   const publish = () => {
-    for (const client of clients.values()) send(client, [{ type: "activity", value: activity.filter((item) => !hiddenActivity.has(item.sessionId)) }, { type: "dialogs", value: dialogs.get(client.session ?? "") ?? [] }]);
+    for (const client of clients.values()) send(client, [{ type: "activity", value: activity.filter((item) => !hiddenActivity.has(item.sessionId)) }, { type: "dialogs", value: dialogs.get(client.session ?? "") ?? [] }, { type: "snapshot", value: execution.snapshot(client.session) }]);
   };
+  const execution = new FakeExecution((id) => activity.find((item) => item.sessionId === id), publish, (session) => {
+    hiddenActivity.delete(session.sessionId);
+    if (!history.some((item) => item.path === session.path)) history.push({ path: session.path, cwd: session.cwd, title: session.title, modified: session.modified });
+  });
   const setDialogs = (sessionId: string, value: unknown[]) => {
     dialogs.set(sessionId, value);
     const current = activity.find((item) => item.sessionId === sessionId);
     if (current) current.state = value.length ? "waiting" : "idle";
     publish();
+  };
+  const makeSession = (directory: string) => {
+    const id = crypto.randomUUID();
+    const session: FixtureActivity = { sessionId: id, path: `${directory}/${id}.jsonl`, cwd: directory, title: "", modified: new Date().toISOString(), state: "idle" };
+    activity.push(session); hiddenActivity.add(id); return session;
+  };
+  const chooseSession = (client: FixtureClient, session: FixtureActivity) => {
+    client.session = session.sessionId;
+    send(client, [{ type: "selected", session: selected(client) }, { type: "dialogs", value: dialogs.get(client.session) ?? [] }, { type: "snapshot", value: execution.snapshot(client.session) }]); publish();
   };
   const createDialog = () => setDialogs("runtime-2", [{ id: crypto.randomUUID(), kind: "confirm", title: `${name} 的远程审批`, message: `确认在 ${name} 执行测试操作？`, deadline: null }]);
   createDialog();
@@ -119,7 +141,38 @@ export async function fakeOpi(name: string) {
         const body: unknown = raw ? JSON.parse(raw) : {};
         if (object(body) && object(body.value)) {
           const action = body.value;
-          if (action.action === "sessions") {
+          if (action.query === "directories") {
+            directoryReads++;
+            if (directoryGate) await directoryGate;
+            const directory = typeof action.path === "string" && action.path ? path.posix.resolve(cwd, action.path) : cwd;
+            if (directory.endsWith("/denied")) { res.writeHead(400).end("EACCES: permission denied"); return; }
+            if (!directoryPaths.has(directory)) { res.writeHead(400).end("ENOENT: directory not found"); return; }
+            const children = [...directoryPaths].filter((child) => child !== directory && path.posix.dirname(child) === directory).map((child) => ({ name: path.posix.basename(child), path: child }));
+            res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ path: directory, parent: path.posix.dirname(directory), children })); return;
+          }
+          if (action.action === "workspace") {
+            workspaceCalls++;
+            if (typeof action.path !== "string" || !directoryPaths.has(action.path)) { res.writeHead(400).end("ENOENT: directory not found"); return; }
+            const directory = action.path;
+            const session = [...activity].reverse().find((item) => item.cwd === directory) ?? makeSession(directory);
+            let waiting: Promise<void> | undefined;
+            if (directory.endsWith("/trust") && !trusted.has(directory)) {
+              const gate = Promise.withResolvers<void>(); startup.set(session.sessionId, { finish: () => { trusted.add(directory); gate.resolve(); } }); waiting = gate.promise;
+              setDialogs(session.sessionId, [{ id: crypto.randomUUID(), kind: "confirm", title: "信任新项目", message: directory, deadline: null }]);
+            }
+            chooseSession(client, session); if (waiting) await waiting;
+          } else if (action.action === "new") {
+            const source = activity.find((item) => item.sessionId === body.sessionId);
+            if (!source) { res.writeHead(400).end("Unknown source session"); return; }
+            newCalls++; chooseSession(client, makeSession(source.cwd));
+          } else if (action.action === "rename") {
+            const session = activity.find((item) => item.sessionId === body.sessionId); if (!session) { res.writeHead(400).end("Unknown rename session"); return; }
+            session.title = String(action.name); publish();
+          } else if (action.action === "prompt") {
+            const id = String(body.sessionId); await execution.prompt(id, String(action.text), (dialogs) => setDialogs(id, dialogs), client.ws);
+          } else if (action.action === "abort") {
+            const id = String(body.sessionId); execution.abort(id); setDialogs(id, []);
+          } else if (action.action === "sessions") {
             catalogReads++; if (historyGate) await historyGate;
             client.all = action.all === true;
             send(client, [{ type: "sessions", value: client.all ? history : history.filter((item) => item.cwd === cwd) }]);
@@ -131,7 +184,7 @@ export async function fakeOpi(name: string) {
             }
             if (!target) { res.writeHead(400).end("Unknown session"); return; }
             client.session = target.sessionId;
-            send(client, [{ type: "selected", session: selected(client) }, { type: "dialogs", value: dialogs.get(client.session) ?? [] }]); publish();
+            send(client, [{ type: "selected", session: selected(client) }, { type: "dialogs", value: dialogs.get(client.session) ?? [] }, { type: "snapshot", value: execution.snapshot(client.session) }]); publish();
           } else if (action.action === "dialog") {
             const sessionId = String(body.sessionId);
             const pending = dialogs.get(sessionId) ?? [];
@@ -141,6 +194,7 @@ export async function fakeOpi(name: string) {
             if (Array.isArray(dialog.options) && action.value !== null && !dialog.options.some((option) => object(option) && option.value === action.value)) { res.writeHead(400).end("Invalid option"); return; }
             answers.push({ sessionId, dialogId: String(action.id), value: action.value });
             setDialogs(sessionId, pending.filter((item) => item !== dialog));
+            startup.get(sessionId)?.finish(); startup.delete(sessionId); execution.answer(sessionId);
           } else { res.writeHead(400).end("Unknown action"); return; }
           res.writeHead(204).end(); return;
         }
@@ -160,9 +214,9 @@ export async function fakeOpi(name: string) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       const id = crypto.randomUUID();
       const requested = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
-      const client: FixtureClient = { ws, sequence: 0, all: false, acknowledgements: 0, historyQuery: requested === "hub-history-query", session: requested ? activity.find((item) => item.sessionId === requested)?.sessionId ?? null : "runtime-1" };
+      const client: FixtureClient = { ws, sequence: 0, all: false, acknowledgements: 0, historyQuery: requested === "hub-history-query", purpose: requested, session: requested ? activity.find((item) => item.sessionId === requested)?.sessionId ?? null : "runtime-1" };
       clients.set(id, client);
-      send(client, [{ type: "client", id }, { type: "selected", session: selected(client) }, { type: "workspaces", value: [...new Set(history.map((item) => item.cwd))].map((path) => ({ path, exists: true })) }, { type: "sessions", value: history.filter((item) => item.cwd === cwd) }, { type: "activity", value: activity.filter((item) => !hiddenActivity.has(item.sessionId)) }, { type: "dialogs", value: dialogs.get(client.session ?? "") ?? [] }], id);
+      send(client, [{ type: "client", id }, { type: "selected", session: selected(client) }, { type: "workspaces", value: [...new Set(history.map((item) => item.cwd))].map((path) => ({ path, exists: true })) }, { type: "sessions", value: history.filter((item) => item.cwd === cwd) }, { type: "activity", value: activity.filter((item) => !hiddenActivity.has(item.sessionId)) }, { type: "dialogs", value: dialogs.get(client.session ?? "") ?? [] }, { type: "snapshot", value: execution.snapshot(client.session) }], id);
       ws.on("message", (raw, binary) => {
         if (!binary) {
           const value: unknown = JSON.parse(raw.toString());
@@ -178,9 +232,16 @@ export async function fakeOpi(name: string) {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No address");
   return {
-    url: `http://127.0.0.1:${address.port}`, leaked: () => leaked, setDialogs, answers,
+    url: `http://127.0.0.1:${address.port}`, leaked: () => leaked, setDialogs, answers, prompts: execution.prompts,
     selections: () => [...clients.values()].map((client) => client.session),
+    deleteSession(id: string) {
+      const index = activity.findIndex((item) => item.sessionId === id); if (index >= 0) activity.splice(index, 1);
+      for (const client of clients.values()) send(client, [{ type: "sessionsDeleted", ids: [id], paths: [] }]); publish();
+    },
     catalogReads: () => catalogReads,
+    newCalls: () => newCalls, workspaceCalls: () => workspaceCalls, directoryReads: () => directoryReads,
+    directoryClients: () => [...clients.values()].filter((client) => client.purpose === "hub-directory-query").length,
+    holdDirectories() { const gate = Promise.withResolvers<void>(); directoryGate = gate.promise; return () => { directoryGate = undefined; gate.resolve(); }; },
     historyClients: () => [...clients.values()].filter((client) => client.historyQuery).length,
     holdHistory() { const gate = Promise.withResolvers<void>(); historyGate = gate.promise; return () => { historyGate = undefined; gate.resolve(); }; },
     disconnectClients() { for (const client of clients.values()) client.ws.terminate(); },
@@ -190,8 +251,20 @@ export async function fakeOpi(name: string) {
       const item = history[0]; if (!item) throw new Error("Missing history"); item.title = title;
       for (const client of clients.values()) send(client, [{ type: "sessionsPatch", value: [{ values: client.all ? history : history.filter((row) => row.cwd === cwd) }] }]);
     },
-    async close() { for (const ws of wss.clients) ws.terminate(); wss.close(); const closing = new Promise<void>((resolve) => server.close(() => resolve())); server.closeAllConnections(); await closing; },
+    async close() { execution.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); const closing = new Promise<void>((resolve) => server.close(() => resolve())); server.closeAllConnections(); await closing; },
   };
+}
+export function managedConfig(config: { hub: string; token: string }, upstream: string, cwd: string): NodeConfig {
+  return { ...config, command: [process.execPath, fileURLToPath(new URL("./owned-web.ts", import.meta.url)), "--upstream", upstream], cwd };
+}
+export async function waitDevices(base: string, cookie: string, count: number): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    const value: unknown = await (await fetch(base + "/_hub/overview", { headers: { Cookie: cookie } })).json();
+    if (object(value) && Array.isArray(value.devices) && value.devices.filter((item) => object(item) && object(item.report) && item.report.ready === true && object(item.management) && item.management.state === "ready").length === count) return;
+    if (Date.now() > deadline) throw new Error("托管后端未就绪");
+    await delay(20);
+  }
 }
 export async function fixture(port = 0) {
   const directory = await mkdtemp(path.join(tmpdir(), "opi-hub-"));
@@ -202,9 +275,9 @@ export async function fixture(port = 0) {
   const cookie = await login(hub.url);
   const a = await add(hub.url, cookie, "开发台式机");
   const b = await add(hub.url, cookie, "笔记本");
-  const agentA = startNode({ ...a.config, target: fakeA.url }, () => {});
-  const agentB = startNode({ ...b.config, target: fakeB.url }, () => {});
-  await Promise.all([agentA.ready, agentB.ready]);
+  const agentA = startNode(managedConfig(a.config, fakeA.url, directory), () => {});
+  const agentB = startNode(managedConfig(b.config, fakeB.url, directory), () => {});
+  await Promise.all([agentA.ready, agentB.ready]); await waitDevices(hub.url, cookie, 2);
   return {
     hub, directory, cookie, a, b, fakeA, fakeB, agentA, agentB,
     async close() {
@@ -221,9 +294,11 @@ export async function login(base: string): Promise<string> {
   if (!cookie) throw new Error("No cookie");
   return cookie;
 }
-export async function add(base: string, cookie: string, name: string): Promise<{ id: string; config: { hub: string; token: string; target: string } }> {
+export async function add(base: string, cookie: string, name: string): Promise<{ id: string; config: { hub: string; token: string; command: [string, ...string[]] } }> {
   const response = await fetch(`${base}/_hub/devices`, { method: "POST", headers: { Cookie: cookie, Origin: base, "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
   const value: unknown = await response.json();
-  if (!object(value) || typeof value.id !== "string" || !object(value.config) || typeof value.config.hub !== "string" || typeof value.config.token !== "string" || typeof value.config.target !== "string") throw new Error("Invalid enrollment");
-  return { id: value.id, config: { hub: value.config.hub, token: value.config.token, target: value.config.target } };
+  if (!object(value) || typeof value.id !== "string" || !object(value.config) || typeof value.config.hub !== "string" || typeof value.config.token !== "string" || !Array.isArray(value.config.command) || !value.config.command.every((part: unknown) => typeof part === "string")) throw new Error("Invalid enrollment");
+  const [executable, ...args] = value.config.command;
+  if (typeof executable !== "string") throw new Error("Missing managed backend command");
+  return { id: value.id, config: { hub: value.config.hub, token: value.config.token, command: [executable, ...args] } };
 }

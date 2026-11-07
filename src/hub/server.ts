@@ -12,6 +12,10 @@ import { MAX_FRAME, object } from "../shared/protocol.ts";
 import { resolveDevice } from "./native.ts";
 import { proxyHttp, proxyWebSocket } from "./proxy.ts";
 import { overview } from "./overview.ts";
+import { isAbsoluteDirectory } from "../shared/session-creation.ts";
+import { ScheduleStore } from "./scheduling/store.ts";
+import { Scheduler } from "./scheduling/engine.ts";
+import { scheduleRoute } from "./scheduling/routes.ts";
 
 export interface HubOptions {
   host: string; port: number; data: string; assets: string; publicUrl?: string;
@@ -27,6 +31,11 @@ export async function startHub(options: HubOptions) {
   const configured = options.publicUrl ? new URL(options.publicUrl) : undefined;
   if (configured && (!["http:", "https:"].includes(configured.protocol) || configured.pathname !== "/" || configured.search || configured.hash || configured.username || configured.password)) throw new Error("public-url 必须是 HTTP(S) 入口地址，不包含路径和凭据");
   const secure = configured ? configured.protocol === "https:" : Boolean(options.tls);
+  let scheduleStore: ScheduleStore;
+  try { scheduleStore = await ScheduleStore.open(options.data); } catch (error) { auth.close(); nodes.close(); throw error; }
+  let scheduler: Scheduler;
+  try { scheduler = new Scheduler(scheduleStore, nodes, (id) => Boolean(store.get(id))); }
+  catch (error) { scheduleStore.close(); auth.close(); nodes.close(); throw error; }
   const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: false });
   const assets: Record<string, { file: string; type: string }> = {
     "/": { file: "index.html", type: "text/html; charset=utf-8" },
@@ -38,6 +47,9 @@ export async function startHub(options: HubOptions) {
     "/_hub/history.js": { file: "history.js", type: "text/javascript; charset=utf-8" },
     "/_hub/navigation.js": { file: "navigation.js", type: "text/javascript; charset=utf-8" },
     "/_hub/views.js": { file: "views.js", type: "text/javascript; charset=utf-8" },
+    "/_hub/create-session.js": { file: "create-session.js", type: "text/javascript; charset=utf-8" },
+    "/_hub/backend.js": { file: "backend.js", type: "text/javascript; charset=utf-8" },
+    "/_hub/schedules.js": { file: "schedules.js", type: "text/javascript; charset=utf-8" },
     "/_hub/icon.svg": { file: "icon.svg", type: "image/svg+xml" },
   };
   const handle = async (req: IncomingMessage, res: ServerResponse) => {
@@ -46,6 +58,7 @@ export async function startHub(options: HubOptions) {
     res.setHeader("Referrer-Policy", "same-origin");
     res.setHeader("Content-Security-Policy", CSP);
     try {
+      if (closed) throw new HttpError(503, "中心正在关闭");
       const url = new URL(req.url ?? "/", origin);
       if (req.headers.host !== new URL(origin).host) throw new HttpError(421, "Host 与中心入口不匹配，请检查 public-url");
       if (url.pathname === "/_hub/health" && req.method === "GET") { reply(res, 200, { ok: true }); return; }
@@ -60,8 +73,39 @@ export async function startHub(options: HubOptions) {
         auth.checkOrigin(req, origin); auth.logout(req, res, secure); reply(res, 200, { ok: true }); return;
       }
       if (url.pathname === "/_hub/me" && req.method === "GET") { reply(res, 200, { authenticated: Boolean(auth.get(req)) }); return; }
+      if (await scheduleRoute(url, req, res, origin, auth, scheduler)) return;
       if (url.pathname === "/_hub/overview" && req.method === "GET") {
-        auth.require(req); reply(res, 200, overview(store, nodes)); return;
+        auth.require(req); reply(res, 200, { ...overview(store, nodes), scheduleSummary: scheduler.summary() }); return;
+      }
+      if (url.pathname === "/_hub/backend/restart" && req.method === "POST") {
+        const session = auth.require(req); auth.checkOrigin(req, origin);
+        const body = await readJson(req);
+        if (!object(body) || typeof body.deviceId !== "string" || typeof body.connectionId !== "string") throw new HttpError(400, "需要设备和后端连接标识");
+        if (!store.get(body.deviceId)) throw new HttpError(404, "设备不存在");
+        const controller = new AbortController(); const cancel = () => controller.abort();
+        session.close.add(cancel); res.once("close", cancel);
+        try { await nodes.restartBackend(body.deviceId, body.connectionId, controller.signal); reply(res, 202, { ok: true }); }
+        catch (error) { throw new HttpError(409, error instanceof Error ? error.message : "后端重启未确认，请检查设备状态"); }
+        finally { session.close.delete(cancel); res.off("close", cancel); }
+        return;
+      }
+      if ((url.pathname === "/_hub/directories" || url.pathname === "/_hub/sessions") && req.method === "POST") {
+        const session = auth.require(req); auth.checkOrigin(req, origin);
+        const body = await readJson(req);
+        if (!object(body) || typeof body.deviceId !== "string" || typeof body.path !== "string" || body.path.length > 4096 || body.path.includes("\0")) throw new HttpError(400, "需要设备标识和有效目录路径");
+        if (!store.get(body.deviceId)) throw new HttpError(404, "设备不存在");
+        const creating = url.pathname === "/_hub/sessions";
+        if (creating && (!isAbsoluteDirectory(body.path) || typeof body.creationId !== "string" || !/^[a-f0-9-]{36}$/.test(body.creationId))) throw new HttpError(400, "新建会话需要绝对目录路径和创建请求标识");
+        const controller = new AbortController(); const cancel = () => controller.abort();
+        session.close.add(cancel); res.once("close", cancel);
+        try {
+          if (creating && typeof body.creationId === "string") {
+            await nodes.create(body.deviceId, body.creationId, body.path, controller.signal);
+            reply(res, 202, { creationId: body.creationId });
+          } else reply(res, 200, await nodes.directories(body.deviceId, body.path, controller.signal));
+        } catch (error) { throw new HttpError(409, error instanceof Error ? error.message : "设备操作失败"); }
+        finally { session.close.delete(cancel); res.off("close", cancel); }
+        return;
       }
       if (url.pathname === "/_hub/history" && req.method === "POST") {
         const session = auth.require(req); auth.checkOrigin(req, origin);
@@ -100,14 +144,14 @@ export async function startHub(options: HubOptions) {
           const body = await readJson(req);
           if (!object(body) || typeof body.name !== "string" || !body.name.trim() || body.name.trim().length > 80) throw new HttpError(400, "设备名称需要 1–80 个字符");
           const { device, token } = await store.add(body.name.trim());
-          reply(res, 201, { id: device.id, config: { hub: origin, token, target: "http://127.0.0.1:19198" } }); return;
+          reply(res, 201, { id: device.id, config: { hub: origin, token, command: ["opi-web"] } }); return;
         }
         throw new HttpError(405, "不支持此操作");
       }
       const remove = /^\/_hub\/devices\/([a-f0-9-]{36})$/.exec(url.pathname);
       if (remove?.[1] && req.method === "DELETE") {
         auth.require(req); auth.checkOrigin(req, origin);
-        await store.remove(remove[1]); nodes.disconnect(remove[1]); reply(res, 200, { ok: true }); return;
+        scheduler.removeDevice(remove[1]); await store.remove(remove[1]); nodes.disconnect(remove[1]); reply(res, 200, { ok: true }); return;
       }
       const asset = assets[url.pathname];
       if (asset && (req.method === "GET" || req.method === "HEAD")) {
@@ -131,10 +175,13 @@ export async function startHub(options: HubOptions) {
       reply(res, error instanceof HttpError ? error.status : 500, { error: error instanceof Error ? error.message : "请求失败" });
     }
   };
-  const server = options.tls ? https.createServer(options.tls, (req, res) => { void handle(req, res); }) : http.createServer((req, res) => { void handle(req, res); });
+  let server: http.Server;
+  try { server = options.tls ? https.createServer(options.tls, (req, res) => { void handle(req, res); }) : http.createServer((req, res) => { void handle(req, res); }); }
+  catch (error) { auth.close(); nodes.close(); await scheduler.close(); throw error; }
   server.on("upgrade", (req, socket, head) => {
     void (async () => {
       try {
+        if (closed) throw new HttpError(503, "中心正在关闭");
         const url = new URL(req.url ?? "/", origin);
         if (req.headers.host !== new URL(origin).host) throw new HttpError(421, "Host mismatch");
         if (url.pathname === "/_hub/connect" || url.pathname.startsWith("/_hub/stream/")) {
@@ -157,25 +204,27 @@ export async function startHub(options: HubOptions) {
       } catch (error) { rejectUpgrade(socket, error instanceof HttpError ? error.status : 500); }
     })();
   });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port, options.host, () => { server.off("error", reject); resolve(); });
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject); server.listen(options.port, options.host, () => { server.off("error", reject); resolve(); });
+    });
+  } catch (error) { sockets.close(); auth.close(); nodes.close(); await scheduler.close(); throw error; }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("未能取得监听地址");
   const host = options.host.includes(":") ? `[${options.host}]` : options.host;
   const listenUrl = `${options.tls ? "https" : "http"}://${host}:${address.port}`;
   origin = configured?.origin ?? listenUrl;
+  scheduler.start();
   return {
     url: origin, listenUrl,
     async close() {
       if (closed) return;
-      closed = true; auth.close(); nodes.close();
+      closed = true; scheduler.stop(); auth.close(); nodes.close();
       for (const ws of sockets.clients) ws.terminate();
       sockets.close();
       const closing = new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server.closeAllConnections();
-      await closing;
+      await scheduler.close(); await closing;
     },
   };
 }

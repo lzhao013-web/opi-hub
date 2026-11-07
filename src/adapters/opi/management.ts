@@ -5,6 +5,10 @@ import { buffer } from "../../shared/sockets.ts";
 import type { Interaction, ManagedSession, ManagementState } from "../../shared/management.ts";
 import { OpiClient } from "./client.ts";
 import { readHistory } from "./history.ts";
+import { listDirectories } from "./directories.ts";
+import { SessionCreation } from "./creation.ts";
+import { AgentTask } from "./task.ts";
+import { blockingTask, executingTask, type TaskInput } from "../../shared/tasks.ts";
 import { applyDirectory, decodeDialog, decodeEvent, decodeFrame, type Activity, type OpiEvent, type Selected, type Workspace } from "./wire.ts";
 
 /** 每个订阅有独立客户端身份，不借用浏览器的导航或审批连接。 */
@@ -73,6 +77,8 @@ export class OpiManagement {
   private viewerCleanup = new Set<() => void>();
   private workspaces: Workspace[] | undefined;
   private activity: Activity[] = [];
+  private creations = new Map<string, SessionCreation>();
+  private tasks = new Map<string, AgentTask>();
   private feedback = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
@@ -82,6 +88,12 @@ export class OpiManagement {
       if (event?.type === "workspaces") this.workspaces = event.value;
       if (event?.type === "workspacesPatch") this.workspaces = applyDirectory(this.workspaces, event.value);
       if (event?.type === "activity") this.activity = event.value;
+      if (event?.type === "sessionsDeleted") for (const creation of this.creations.values()) {
+        const record = creation.record;
+        if (record.state === "ready" && event.ids.includes(record.session.id)) creation.record = {
+          id: record.id, path: record.path, startedAt: record.startedAt, state: "error", error: "会话已删除，此创建请求不会重新执行。", session: null,
+        };
+      }
       if (event?.type === "feedback" && event.tone === "error") this.feedback.add(event.message);
       if (!event && !this.catalog.connected) { this.workspaces = undefined; this.activity = []; this.feedback.clear(); }
       this.schedule();
@@ -123,6 +135,10 @@ export class OpiManagement {
     if (this.catalog.connected) {
       for (const session of this.activity) if (session.state === "waiting") desired.add(session.sessionId);
       for (const session of this.viewers.values()) desired.add(session.id);
+      for (const creation of this.creations.values()) {
+        const record = creation.record;
+        if (record.state === "ready" && !this.activity.some((item) => item.sessionId === record.session.id)) desired.add(record.session.id);
+      }
       for (const [id, watch] of this.watches) if (watch.connected && watch.dialogs.length) desired.add(id);
       if (this.catalog.selected) desired.delete(this.catalog.selected.id);
     }
@@ -133,7 +149,12 @@ export class OpiManagement {
       return;
     }
     const subscriptions = [this.catalog, ...this.watches.values()];
-    const interactions = subscriptions.filter((watch) => watch.connected).flatMap((watch) => watch.dialogs);
+    const terminal = [...this.tasks.values()].filter((task) => !blockingTask(task.record.state)).sort((a, b) => b.record.updatedAt.localeCompare(a.record.updatedAt));
+    for (const task of terminal.slice(100)) this.tasks.delete(task.record.id);
+    const creationDialogs = [...this.creations.values()].flatMap((creation) => creation.dialogs);
+    const taskDialogs = [...this.tasks.values()].flatMap((task) => task.dialogs);
+    const dialogs = [...subscriptions.filter((watch) => watch.connected).flatMap((watch) => watch.dialogs), ...creationDialogs, ...taskDialogs];
+    const interactions = [...new Map(dialogs.map((dialog) => [JSON.stringify([dialog.sessionId, dialog.id]), dialog])).values()];
     const active = [...this.activity];
     // 启动交互和经浏览器发现的新会话可能尚未进入运行目录。
     for (const watch of subscriptions) {
@@ -142,14 +163,50 @@ export class OpiManagement {
         sessionId: selected.id, path: selected.path, cwd: selected.cwd, title: "", modified: "", state: "waiting",
       });
     }
+    for (const creation of this.creations.values()) {
+      const record = creation.record;
+      const session = record.state === "ready" ? record.session : creation.selected;
+      if (session && (record.state === "ready" || creation.dialogs.length) && !active.some((item) => item.sessionId === session.id)) active.push({
+        sessionId: session.id, path: session.path, cwd: session.cwd, title: "", modified: record.startedAt,
+        state: creation.dialogs.length ? "waiting" : "idle",
+      });
+    }
+    for (const task of this.tasks.values()) {
+      if (!executingTask(task.record.state)) continue;
+      const session = task.record.session ?? (task.dialogs.length ? task.selected : null);
+      if (session && !active.some((item) => item.sessionId === session.id)) active.push({ sessionId: session.id, path: task.record.file, cwd: session.cwd, title: `[schedule] ${task.record.name}`, modified: task.record.updatedAt,
+        state: task.record.state === "waiting" ? "waiting" : executingTask(task.record.state) ? "running" : "idle" });
+    }
     const sessions: ManagedSession[] = active.map((item) => ({ target: { id: item.sessionId }, file: item.path, cwd: item.cwd, title: item.title, modified: item.modified, state: item.state }));
     const workspaces = [...new Set([...(this.workspaces ?? []).map((item) => item.path), ...active.map((item) => item.cwd), ...[...this.viewers.values()].map((item) => item.cwd)])];
     const issues = [...this.feedback, ...[...this.watches].flatMap(([id, watch]) => watch.error ? [`${id}: ${watch.error}`] : [])];
-    this.emit({ state: "ready", workspaces, sessions, interactions, issues });
+    this.emit({ state: "ready", workspaces, sessions, interactions, creations: [...this.creations.values()].map((creation) => creation.record), tasks: [...this.tasks.values()].map((task) => task.record), issues });
   }
   history(signal: AbortSignal) { return readHistory(this.target, signal); }
+  directories(path: string, signal: AbortSignal) { return listDirectories(this.target, path, signal); }
+  create(id: string, path: string): void {
+    const existing = this.creations.get(id);
+    if (existing) {
+      if (existing.requestedPath !== path) throw new Error("创建请求标识不能用于不同目录");
+      return;
+    }
+    if ([...this.creations.values()].some((creation) => creation.record.state === "creating")) throw new Error("此设备正在创建会话，请先完成相关交互");
+    this.creations.set(id, new SessionCreation(this.target, id, path, () => this.schedule())); this.schedule();
+  }
+  startTask(input: TaskInput): void {
+    const existing = this.tasks.get(input.id);
+    if (existing) { if (existing.input.name !== input.name || existing.input.path !== input.path || existing.input.prompt !== input.prompt || existing.input.timeoutSeconds !== input.timeoutSeconds) throw new Error("运行标识不能用于不同任务"); return; }
+    if ([...this.tasks.values()].some((task) => blockingTask(task.record.state)) || [...this.creations.values()].some((creation) => creation.record.state === "creating")) throw new Error("此设备仍有计划运行或会话创建未结束");
+    this.tasks.set(input.id, new AgentTask(this.target, input, () => this.schedule())); this.schedule();
+  }
+  async cancelTask(id: string): Promise<void> { const task = this.tasks.get(id); if (!task) throw new Error("未找到原运行，无法确认已停止"); await task.cancel(); }
+  acknowledgeTask(id: string): void { this.tasks.get(id)?.acknowledge(); }
   async respond(sessionId: string, dialogId: string, value: string | null): Promise<void> {
+    const task = [...this.tasks.values()].find((task) => task.dialogs.some((dialog) => dialog.sessionId === sessionId && dialog.id === dialogId));
+    if (task) { await task.respond(sessionId, dialogId, value); return; }
     const subscription = this.catalog.selected?.id === sessionId ? this.catalog : this.watches.get(sessionId);
+    const creation = [...this.creations.values()].find((creation) => creation.dialogs.some((dialog) => dialog.sessionId === sessionId && dialog.id === dialogId));
+    if (creation) { await creation.respond(sessionId, dialogId, value); return; }
     if (!subscription) throw new Error("目标交互已结束，请刷新状态");
     await subscription.respond(sessionId, dialogId, value);
   }
@@ -157,7 +214,7 @@ export class OpiManagement {
     if (this.stopped) return;
     this.stopped = true; clearTimeout(this.timer);
     for (const cleanup of [...this.viewerCleanup]) cleanup();
-    await Promise.all([this.catalog.close(), ...[...this.watches.values()].map((watch) => watch.close())]);
+    await Promise.all([this.catalog.close(), ...[...this.watches.values()].map((watch) => watch.close()), ...[...this.creations.values()].map((creation) => creation.close()), ...[...this.tasks.values()].map((task) => task.close())]);
     this.watches.clear();
   }
 }

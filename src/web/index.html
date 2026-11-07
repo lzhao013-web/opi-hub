@@ -23,6 +23,7 @@
       <a href="/" class="brand"><img src="/_hub/icon.svg" width="28" height="28" alt=""><span>opi<span class="brand-secondary"> hub</span></span></a>
       <nav class="global-nav" aria-label="管理视图">
         <button id="overview-nav" class="nav-item selected" type="button"><span>概览</span></button>
+        <button id="schedules-nav" class="nav-item" type="button"><span>计划任务</span><span id="schedule-attention" class="count"></span></button>
         <button id="history-nav" class="nav-item" type="button"><span>查找历史</span></button>
         <button id="all-interactions" class="nav-item" type="button"><span>待处理交互</span><span id="interaction-count" class="count">0</span></button>
         <button id="all-devices" class="nav-item" type="button"><span>全部设备</span><span id="device-count" class="count">0</span></button>
@@ -34,9 +35,12 @@
     <main class="canvas">
       <header class="toolbar"><span>工作空间 <span class="muted">/</span> <span id="breadcrumb">概览</span></span><button id="theme" class="text-button" type="button" aria-label="切换主题">跟随系统</button></header>
       <section class="content">
-        <div class="page-heading"><div><p class="eyebrow">OPI HUB</p><h1 id="heading">概览</h1><p id="page-description" class="muted">关注正在进行的工作，不展开全部历史。</p></div><button id="add-device" class="primary" type="button"><span aria-hidden="true">+</span> 添加设备</button></div>
+        <div class="page-heading"><div><p class="eyebrow">OPI HUB</p><h1 id="heading">概览</h1><p id="page-description" class="muted">关注正在进行的工作，不展开全部历史。</p></div><div class="page-actions"><button id="new-session" class="primary" type="button" disabled>新建会话</button><button id="add-schedule" class="primary" type="button" hidden>新建计划</button><button id="add-device" class="secondary" type="button"><span aria-hidden="true">+</span> 添加设备</button></div></div>
         <div class="summary"><span><span id="online-count" class="status-dot online"></span><span id="summary-text">正在连接…</span></span><span class="muted">任务在设备本机运行</span></div>
         <p id="workspace-error" class="notice" role="alert" hidden></p>
+        <button id="schedule-alert" class="notice schedule-alert" type="button" hidden></button>
+        <p id="creation-error" class="notice" role="alert" hidden></p>
+        <section id="session-creations" aria-label="会话创建记录" hidden><h2 class="section-title">会话创建</h2><div id="creation-records" class="creation-list"></div></section>
         <div id="management-status" role="status"></div>
         <div class="mobile-scope"><label for="workspace-picker">设备与工作区</label><select id="workspace-picker" aria-label="设备与工作区"></select></div>
         <p id="selected-workspace" class="selected-workspace muted" hidden></p>
@@ -50,12 +54,18 @@
           <h2 class="section-title">正在进行</h2><div id="device-sessions" class="session-list"></div>
         </section>
         <section id="workspace-view" aria-label="工作区会话" hidden>
-          <div class="workspace-controls"><div class="session-controls"><label for="session-search">筛选当前工作区</label><input id="session-search" type="search" placeholder="会话标题" autocomplete="off"></div><button id="load-history" class="secondary" type="button">加载历史会话</button></div>
+          <div class="workspace-controls"><div class="session-controls"><label for="session-search">筛选当前工作区</label><input id="session-search" type="search" placeholder="会话标题" autocomplete="off"></div><button id="load-history" class="secondary" type="button">加载历史会话</button><button id="schedule-workspace" class="secondary" type="button">预约任务</button></div>
           <p id="history-status" class="section-caption muted" role="status"></p><div id="sessions" class="session-list"></div>
         </section>
         <section id="history-view" aria-label="历史查询" hidden>
           <form id="history-form" class="history-form"><div><label for="history-query">历史关键词</label><input id="history-query" type="search" required placeholder="标题、设备或工作目录" autocomplete="off"></div><div><label for="history-device">查询范围</label><select id="history-device"></select></div><button id="search-history" class="primary" type="submit">搜索历史</button><button id="cancel-search" class="secondary" type="button" hidden>取消搜索</button></form>
           <p id="global-history-status" class="section-caption muted" role="status"></p><div id="history-errors"></div><div id="history-results" class="session-list"></div>
+        </section>
+        <section id="schedules-view" aria-label="计划任务" hidden>
+          <p class="section-caption muted">每次运行新建专用会话，仍遵循原审批规则。离线或错过不补跑，上次未结束或结果未知时不重入。暂停只影响未来触发，不停止当前运行。</p>
+          <p id="schedule-page-error" class="notice" role="alert" hidden></p>
+          <h2 class="section-title">计划</h2><div id="schedule-plans" class="plan-list"></div>
+          <h2 class="section-title">最近运行</h2><p class="section-caption muted">展示全部未结束或待核对运行，以及最近 50 次记录。已结束表示 SDK 执行结束，不代表任务内容已验证成功。修改任务请停用旧计划后新建。</p><div id="schedule-runs" class="plan-list"></div>
         </section>
         <section id="interactions" class="interaction-list" aria-label="待处理交互" hidden></section>
         <div id="devices" class="devices" aria-live="polite" hidden></div>
@@ -64,13 +74,46 @@
       </section>
     </main>
   </div>
+  <dialog id="schedule-dialog" aria-labelledby="schedule-title"><form id="schedule-form">
+    <div class="dialog-heading"><h2 id="schedule-title">新建计划任务</h2><button id="schedule-close" class="icon-button" type="button" aria-label="关闭计划任务">×</button></div>
+    <label for="schedule-name">计划名称</label><input id="schedule-name" required maxlength="80">
+    <label for="schedule-device">计划设备</label><select id="schedule-device" required></select>
+    <label for="schedule-path">任务目录</label><input id="schedule-path" required maxlength="4096" placeholder="目标设备上的已有绝对目录">
+    <label for="schedule-prompt">任务描述</label><textarea id="schedule-prompt" rows="4" required maxlength="16384" placeholder="描述交给 o-pi 的任务，不接受 ! 或 / 命令"></textarea>
+    <div class="schedule-fields"><div><label for="schedule-kind">执行频率</label><select id="schedule-kind"><option value="once">一次性</option><option value="daily">每天</option><option value="weekly">每周</option><option value="interval">日期范围内循环</option><option value="dailyInterval">每日时段内循环</option></select></div><div><label for="schedule-zone">时区</label><input id="schedule-zone" required placeholder="Asia/Shanghai 或 UTC" maxlength="100"></div></div>
+    <div id="schedule-once"><label for="schedule-local">预约时间</label><input id="schedule-local" type="datetime-local" step="1"></div>
+    <div id="schedule-repeat" hidden><label for="schedule-time">执行时间</label><input id="schedule-time" type="time"></div>
+    <section id="schedule-interval" hidden>
+      <div id="schedule-range" class="schedule-fields"><div><label for="schedule-range-start">开始日期时间</label><input id="schedule-range-start" type="datetime-local" step="1"></div><div><label for="schedule-range-end">结束日期时间</label><input id="schedule-range-end" type="datetime-local" step="1"></div></div>
+      <div id="schedule-window" hidden><div class="schedule-fields"><div><label for="schedule-window-start">每日开始时间</label><input id="schedule-window-start" type="time"></div><div><label for="schedule-window-end">每日结束时间</label><input id="schedule-window-end" type="time"></div></div><p class="footnote">结束早于开始表示跨至次日，开始与结束不能相同。</p></div>
+      <label for="schedule-minutes">间隔（分钟）</label><input id="schedule-minutes" type="number" min="1" step="1" value="15">
+      <p class="footnote">以窗口开始为基准，每隔指定的实际分钟数触发。包含开始、不包含结束，窗口结束不停止已运行任务。每次都会新建会话，可能产生模型费用。</p>
+    </section>
+    <fieldset id="schedule-days" class="schedule-days" hidden><legend>执行星期</legend><label><input type="checkbox" value="1">一</label><label><input type="checkbox" value="2">二</label><label><input type="checkbox" value="3">三</label><label><input type="checkbox" value="4">四</label><label><input type="checkbox" value="5">五</label><label><input type="checkbox" value="6">六</label><label><input type="checkbox" value="7">日</label></fieldset>
+    <label for="schedule-timeout">最长运行时间（分钟）</label><input id="schedule-timeout" type="number" min="1" max="180" value="30" required>
+    <p class="footnote">中心需保持运行。每台设备最多一个计划运行，包含等待审批的时间。计划和任务描述会保存到中心数据库，模型沿用设备默认配置。</p>
+    <p id="schedule-form-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button id="schedule-submit" class="primary" type="submit">保存计划</button></div>
+  </form></dialog>
+  <dialog id="schedule-confirm" aria-labelledby="schedule-confirm-title"><form id="schedule-confirm-form"><h2 id="schedule-confirm-title">确认计划操作</h2><p id="schedule-confirm-text"></p><div class="dialog-actions"><button id="schedule-confirm-cancel" class="secondary" type="button">取消</button><button class="primary" type="submit">确认操作</button></div></form></dialog>
+  <dialog id="create-dialog" aria-labelledby="create-title"><form id="create-form">
+    <div class="dialog-heading"><h2 id="create-title">新建会话</h2><button id="close-create" class="icon-button" type="button" aria-label="关闭新建会话">×</button></div>
+    <p class="muted">在目标设备的已有目录创建全新会话，不切换其他页面。</p>
+    <label for="create-device">会话设备</label><select id="create-device" required></select>
+    <label for="create-path">工作目录</label><div class="directory-input"><input id="create-path" required maxlength="4096" placeholder="目标设备上的绝对目录路径" autocomplete="off"><button id="browse-directory" class="secondary" type="button">浏览目录</button></div>
+    <p class="footnote">目录来自目标设备。可输入完整路径切换磁盘，不会自动创建文件夹。</p>
+    <section id="directory-browser" class="directory-browser" aria-label="远程目录" hidden><p id="directory-status" class="directory-status" role="status"></p><div class="directory-actions"><button id="directory-parent" class="secondary" type="button" disabled>上一级</button><button id="use-directory" class="secondary" type="button" disabled>使用此目录</button></div><div id="directory-list" class="directory-list"></div></section>
+    <p id="create-error" class="error" role="alert" hidden></p>
+    <p class="footnote">创建时若需信任项目，请在“待处理交互”回答。完成后可从创建记录打开原生会话。关闭弹窗或刷新页面不会撤销已经提交的创建。</p>
+    <div class="dialog-actions"><button id="create-submit" class="primary" type="submit">创建会话</button></div>
+  </form></dialog>
   <dialog id="enroll-dialog" aria-labelledby="enroll-title">
     <form id="enroll-form">
       <div class="dialog-heading"><h2 id="enroll-title">添加设备</h2><button id="close-enroll" class="icon-button" type="button" aria-label="关闭">×</button></div>
       <div id="enroll-name-step"><p class="muted">为设备创建独立凭据，之后在该设备运行连接程序。</p><label for="device-name">设备名称</label><input id="device-name" placeholder="例如：开发台式机" maxlength="80" required><p id="enroll-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button class="primary" id="enroll-submit" type="submit">创建设备</button></div></div>
-      <div id="enroll-config-step" hidden><p>在目标设备保存为 <code>node.json</code>：</p><textarea id="node-config" readonly rows="8" spellcheck="false" aria-label="节点配置"></textarea><p class="footnote">凭据仅在此处显示一次。请勿分享，并限制配置文件的读取权限。</p><div class="config-actions"><button id="download-config" class="secondary" type="button">下载配置</button><button id="copy-config" class="secondary" type="button">复制配置</button></div><ol class="steps"><li>启动该设备的 <code>opi-web</code>，或启用 Desktop Web。</li><li>确认配置中的 <code>target</code> 与本机 Web 地址一致。</li><li>在 opi-hub 项目目录运行：<pre>bun run node --config /path/to/node.json</pre></li></ol><div class="dialog-actions"><button id="finish-enroll" class="primary" type="button">完成</button></div></div>
+      <div id="enroll-config-step" hidden><p>在目标设备保存为 <code>node.json</code>：</p><textarea id="node-config" readonly rows="8" spellcheck="false" aria-label="节点配置"></textarea><p class="footnote">凭据仅在此处显示一次。请勿分享，并限制配置文件的读取权限。</p><div class="config-actions"><button id="download-config" class="secondary" type="button">下载配置</button><button id="copy-config" class="secondary" type="button">复制配置</button></div><ol class="steps"><li>在目标设备安装 <code>opi-web</code>，无需手动打开。</li><li>将 <code>command</code> 改为程序完整路径，例如 <code>["F:/apps/opi-web.exe"]</code>。节点会自动后台启动它。</li><li>在 opi-hub 项目目录运行：<pre>bun run node --config /path/to/node.json</pre></li></ol><div class="dialog-actions"><button id="finish-enroll" class="primary" type="button">完成</button></div></div>
     </form>
   </dialog>
-  <dialog id="remove-dialog" aria-labelledby="remove-title"><form id="remove-form"><h2 id="remove-title">移除设备？</h2><p id="remove-description"></p><p class="muted">撤销凭据并断开远程访问，不会删除本机会话或停止 o-pi 任务。</p><p id="remove-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button id="cancel-remove" class="secondary" type="button">取消</button><button id="confirm-remove" class="danger" type="submit">移除设备</button></div></form></dialog>
+  <dialog id="restart-dialog" aria-labelledby="restart-title"><form id="restart-form"><h2 id="restart-title">重启托管后端？</h2><p id="restart-device"></p><p class="muted">这会中断该设备上的所有托管任务，取消未完成交互。只重启节点自己启动的 opi-web，不影响其他独立进程。已有任务不会自动重发，只有已保存的历史可重新打开。</p><p id="restart-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button id="cancel-restart" class="secondary" type="button">取消</button><button id="confirm-restart" class="danger" type="submit">确认重启</button></div></form></dialog>
+  <dialog id="remove-dialog" aria-labelledby="remove-title"><form id="remove-form"><h2 id="remove-title">移除设备？</h2><p id="remove-description"></p><p class="muted">撤销凭据并关闭节点托管的后端，会中断该设备上的托管任务。不会删除已保存的会话文件，也不关闭其他独立进程。</p><p id="remove-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button id="cancel-remove" class="secondary" type="button">取消</button><button id="confirm-remove" class="danger" type="submit">移除设备</button></div></form></dialog>
 </body>
 </html>

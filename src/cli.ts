@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Store, secret } from "./hub/store.ts";
 import { startHub } from "./hub/server.ts";
-import { startNode, validateNodeConfig } from "./node/agent.ts";
+import { startNode } from "./node/agent.ts";
 
 const usage = `opi-hub — o-pi 多设备 Web 入口
 
@@ -14,7 +14,7 @@ bun run hub [--host 127.0.0.1] [--port 19200] [--data ./data]
             [--public-url https://hub.example.com] [--cert cert.pem --key key.pem]
 bun run node --config ./node.json         连接中心，配置由管理界面生成
 
-各设备需要先运行 opi-web 或启用 Desktop Web。`;
+节点根据 command 配置自动后台启动 opi-web，不支持外部后端或 target 配置。`;
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     args: process.argv.slice(2), allowPositionals: true, strict: true,
@@ -45,9 +45,9 @@ async function main(): Promise<void> {
   }
   if (command === "node") {
     if (!values.config) throw new Error("需要 --config ./node.json");
-    const config = validateNodeConfig(JSON.parse(await readFile(values.config, "utf8")));
+    const config: unknown = JSON.parse(await readFile(values.config, "utf8"));
     const node = startNode(config);
-    await untilSignal(); await node.close();
+    await Promise.race([untilSignal(), node.closed]); await node.close();
     return;
   }
   throw new Error(`未知子命令：${command}`);
