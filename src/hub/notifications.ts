@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Session, Auth } from "./auth.ts";
-import type { HubNotice } from "../shared/notifications.ts";
+import { isNotificationDestination, type HubNotice } from "../shared/notifications.ts";
+import type { NodeNotifications } from "./node-notifications.ts";
 import type { ManagementState } from "../shared/management.ts";
 import { HttpError, readJson, reply } from "../shared/http.ts";
 import { object, MAX_FRAME } from "../shared/protocol.ts";
@@ -15,6 +16,8 @@ export class NotificationCenter {
   private presenceCleanup = new Map<string, () => void>();
   private muted = new Map<string, Set<string>>();
   private imported = new Set<string>();
+  private liveListeners = new Set<(notice: HubNotice) => void>();
+  onLive(listener: (notice: HubNotice) => void): () => void { this.liveListeners.add(listener); return () => { this.liveListeners.delete(listener); }; }
   attend(session: Session, pageId: string, sequence: number, deviceId: string, sessionId: string | null, destination: string, focused: boolean): void {
     const now = Date.now();
     for (const [key, viewer] of this.viewers) if (viewer.until < now) this.viewers.delete(key);
@@ -29,7 +32,7 @@ export class NotificationCenter {
     }
   }
   snapshot(): HubNotice[] { return [...this.notices.values()].reverse(); }
-  accept(deviceId: string, state: ManagementState): void {
+  accept(deviceId: string, state: ManagementState, initial = false): void {
     if (state.state !== "ready") return;
     const previous = this.sources.get(deviceId);
     let changed = false;
@@ -37,8 +40,13 @@ export class NotificationCenter {
       const id = `${deviceId}:${notice.id}`;
       if (previous?.has(notice.id) || this.notices.has(id)) continue;
       this.notices.set(id, { ...notice, id, deviceId, read: false });
-      if (!previous) this.imported.add(id);
+      if (!previous || initial) this.imported.add(id);
       this.muted.set(id, new Set([...this.viewers.values()].filter((viewer) => viewer.until >= Date.now() && viewer.focused && viewer.deviceId === deviceId && viewer.sessionId === notice.sessionId).map((viewer) => viewer.destination)));
+      // 先交给已授权的本机节点抢占同一接收端，再发布浏览器快照，避免双重弹窗。
+      if (previous && !initial) {
+        const current = this.notices.get(id);
+        if (current) for (const listener of this.liveListeners) listener(current);
+      }
       changed = true;
     }
     this.sources.set(deviceId, new Set(state.notifications.map((notice) => notice.id)));
@@ -76,7 +84,7 @@ export class NotificationCenter {
     this.listeners.add(write); session.close.add(close); res.once("close", close); write();
   }
 }
-export async function notificationRoute(url: URL, req: IncomingMessage, res: ServerResponse, origin: string, auth: Auth, center: NotificationCenter): Promise<boolean> {
+export async function notificationRoute(url: URL, req: IncomingMessage, res: ServerResponse, origin: string, auth: Auth, center: NotificationCenter, receivers: NodeNotifications): Promise<boolean> {
   if (url.pathname !== "/_hub/notifications" && !url.pathname.startsWith("/_hub/notifications/")) return false;
   const session = auth.require(req);
   if (req.headers["sec-fetch-site"] === "cross-site") throw new HttpError(403, "不允许跨站访问");
@@ -86,9 +94,12 @@ export async function notificationRoute(url: URL, req: IncomingMessage, res: Ser
   if (req.method !== "POST") throw new HttpError(405, "不支持此通知操作");
   const body = await readJson(req);
   if (!object(body)) throw new HttpError(400, "无效的通知操作");
+  if (url.pathname === "/_hub/notifications/receiver" && isNotificationDestination(body.destination) && (body.deviceId === null || isNotificationDestination(body.deviceId))) {
+    await receivers.bind(body.deviceId, body.destination); reply(res, 200, { ok: true }); return true;
+  }
   if (url.pathname === "/_hub/notifications/presence" && typeof body.pageId === "string" && /^[a-f0-9]{32}$/.test(body.pageId) && typeof body.sequence === "number" && Number.isSafeInteger(body.sequence) && body.sequence >= 0 &&
     typeof body.deviceId === "string" && /^[a-f0-9-]{36}$/.test(body.deviceId) && (body.sessionId === null || typeof body.sessionId === "string" && body.sessionId.length <= 128) && typeof body.destination === "string" && /^[a-f0-9-]{36}$/.test(body.destination) && typeof body.focused === "boolean") {
-    center.attend(session, body.pageId, body.sequence, body.deviceId, body.sessionId, body.destination, body.focused); reply(res, 200, { ok: true }); return true;
+    center.attend(session, body.pageId, body.sequence, body.deviceId, body.sessionId, body.destination, body.focused); reply(res, 200, { ok: true, nodeNotifications: receivers.activeDestination(body.destination) }); return true;
   }
   if (url.pathname === "/_hub/notifications/read" && (body.id === null || typeof body.id === "string")) { center.read(body.id); reply(res, 200, { ok: true }); return true; }
   if (url.pathname === "/_hub/notifications/claim" && typeof body.id === "string" && typeof body.destination === "string" && /^[a-f0-9-]{36}$/.test(body.destination)) {

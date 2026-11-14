@@ -26,7 +26,7 @@ const navigation = new Navigation(selectScope);
 const views = new WorkspaceViews(history, selectScope);
 const backendControls = new BackendControls(request, refresh);
 const schedules = new ScheduleView(request);
-const messages = new MessageCenter(request, () => { if (authenticated) render(); }, (runId) => { scope = null; view = "schedules"; render(); void schedules.focusRun(runId); }, showLogin);
+const messages = new MessageCenter(request, () => { if (authenticated) render(); }, (runId) => { scope = null; view = "schedules"; render(); void schedules.focusRun(runId); }, showLogin, refresh);
 const creator = new CreateSessionView(request, refresh, () => { scope = null; view = "interactions"; messages.open("pending"); render(); });
 const text = (id, value) => { $(id).textContent = value; };
 function message(id, value) { text(id, value); $(id).hidden = !value; }

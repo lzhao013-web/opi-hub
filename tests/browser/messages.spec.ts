@@ -1,7 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
-import { object } from "../../src/shared/protocol.ts";
+import { object, json } from "../../src/shared/protocol.ts";
 import { isPlan, isRun, type ScheduleRun } from "../../src/shared/schedules.ts";
 import { MARKDOWN_REPLY } from "../markdown-fixture.ts";
+import { WebSocket as NodeSocket } from "ws";
+import { connected } from "../../src/shared/sockets.ts";
+import { isNodeNotificationMessage, type NodeCompletionNotice } from "../../src/shared/notifications.ts";
 
 async function login(page: Page) {
   await page.goto("/"); await page.getByLabel("中心密码").fill("test-password-1234"); await page.getByRole("button", { name: "登录", exact: true }).click();
@@ -68,7 +71,21 @@ test("消息中心分区、前台目标抑制与跨标签通知去重，别的�
   const second = await context.newPage(); await second.goto("/"); await expect(second.getByRole("heading", { name: "概览", exact: true })).toBeVisible();
   const native = await context.newPage(); await native.goto(`/n/${id}/?hub-session=runtime-1`); await expect(native.locator("#selected-session")).toHaveText("runtime-1");
   await native.bringToFront(); expect(await focusReport(page, "runtime-1")).toBe(true);
+  const initialNotices: unknown = await (await page.request.get("/_hub/notifications")).json();
+  if (!Array.isArray(initialNotices)) throw new Error("缺少通知快照");
+  const previous = new Set(initialNotices.flatMap((item: unknown) => object(item) && typeof item.id === "string" ? [item.id] : []));
   await action(native, id, "runtime-1", "前台完成不重复弹窗");
+  let completed = "";
+  await expect.poll(async () => {
+    const value: unknown = await (await page.request.get("/_hub/notifications")).json();
+    if (!Array.isArray(value)) throw new Error("缺少通知快照");
+    const notice: unknown = value.find((item: unknown) => object(item) && item.deviceId === id && item.sessionId === "runtime-1" && typeof item.id === "string" && !previous.has(item.id));
+    if (object(notice) && typeof notice.id === "string") completed = notice.id;
+    return Boolean(completed);
+  }).toBe(true);
+  // 未读计数可能来自旧记录，必须等两页处理本次完成，再切换到其他会话。
+  await expect(page.locator(`[data-notice-id="${completed}"]`)).toHaveCount(1);
+  await expect(second.locator(`[data-notice-id="${completed}"]`)).toHaveCount(1);
   await expect(page.locator("#notification-count")).toContainText("未读");
   expect(claims).toHaveLength(0); await expect(page.locator(".notification-toast")).toHaveCount(0);
   await native.goto(`/n/${id}/?hub-session=runtime-2`); await expect(native.locator("#selected-session")).toHaveText("runtime-2");
@@ -86,6 +103,70 @@ test("消息中心分区、前台目标抑制与跨标签通知去重，别的�
   await page.getByRole("button", { name: "全部标为已读", exact: true }).click(); await expect(page.locator("#notification-count")).toBeEmpty();
   await page.getByRole("tab", { name: /待处理/ }).click(); await expect(page.locator(".interaction")).toHaveCount(before);
   await native.close(); await second.close();
+});
+
+test("浏览器授权节点接收完成摘要，同一接收端不重复弹窗，撤销后恢复浏览器提醒", async ({ page, context }, info) => {
+  await context.addInitScript(() => {
+    const records: string[] = []; Object.defineProperty(window, "hubTestNotifications", { value: records });
+    class TestNotification {
+      static permission = "granted";
+      onclose: (() => void) | null = null;
+      constructor(title: string) { records.push(title); }
+      close() { this.onclose?.(); }
+    }
+    Object.defineProperty(window, "Notification", { value: TestNotification, configurable: true });
+  });
+  await login(page); const source = await device(page); const origin = new URL(page.url()).origin;
+  const created: unknown = await (await page.request.post("/_hub/devices", { headers: { Origin: origin }, data: { name: `通知接收测试 ${info.project.name}` } })).json();
+  if (!object(created) || typeof created.id !== "string" || !object(created.config) || typeof created.config.token !== "string") throw new Error("缺少测试接收节点");
+  const receiver = new NodeSocket(origin.replace(/^http/, "ws") + "/_hub/connect", { headers: { Authorization: `Bearer ${created.config.token}` } });
+  const received: NodeCompletionNotice[] = [];
+  receiver.on("message", (raw) => {
+    const value: unknown = JSON.parse(raw.toString());
+    if (isNodeNotificationMessage(value) && value.type === "completionNotification") received.push(value.notice);
+  });
+  try {
+    await connected(receiver); await json(receiver, { type: "subscribeNotifications", enabled: true });
+    await page.getByRole("button", { name: /消息中心/ }).click(); await page.getByRole("tab", { name: /通知/ }).click();
+    const select = page.getByRole("combobox", { name: "系统通知接收端", exact: true });
+    await select.selectOption({ label: `通知接收测试 ${info.project.name}` });
+    await expect(select).toBeEnabled(); await expect(page.locator("#notification-permission")).toContainText("由它发送系统通知");
+    await action(page, source, "runtime-1", "交给本机节点发送系统提醒");
+    await expect.poll(() => received.length).toBe(1);
+    await expect(page.locator("#notification-list")).toContainText("本轮执行已完成");
+    const count = () => page.evaluate(() => { const values: unknown = Reflect.get(window, "hubTestNotifications"); return Array.isArray(values) ? values.length : -1; });
+    await page.waitForResponse((response) => response.url().endsWith("/_hub/overview"));
+    expect(await count()).toBe(0); await expect(page.locator(".notification-toast")).toHaveCount(0);
+    expect(received[0]?.deviceId).toBe(source); expect(Object.keys(received[0] ?? {}).sort()).toEqual(["completedAt", "deviceId", "deviceName", "id", "title"]);
+    await page.screenshot({ path: info.outputPath("node-notification-receiver.png"), fullPage: true, animations: "disabled" });
+    await page.route("**/_hub/notifications/receiver", (route) => route.fulfill({ status: 403, json: { error: "测试拒绝绑定变更" } }));
+    await select.selectOption(""); await expect(page.locator("#notification-receiver-error")).toHaveText("测试拒绝绑定变更");
+    await expect(select).toHaveValue(created.id); await page.unroute("**/_hub/notifications/receiver");
+    await select.selectOption(""); await expect(select).toBeEnabled();
+    await action(page, source, "runtime-1", "撤销节点绑定后交给浏览器提醒");
+    await expect.poll(count).toBe(1); expect(received).toHaveLength(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    // 关闭所有 Hub 页后，本机节点仍负责通知，原生页也不能恢复重复弹窗。
+    await select.selectOption(created.id); await expect(select).toBeEnabled();
+    const native = await context.newPage(); await native.goto(`${origin}/n/${source}/?hub-session=runtime-2`);
+    await expect(native.locator("#selected-session")).toHaveText("runtime-2"); await page.close();
+    const presence = native.waitForResponse((response) => response.url().endsWith("/_hub/notifications/presence"));
+    await native.evaluate(() => { const now = Date.now; Date.now = () => now() + 20_000; window.dispatchEvent(new Event("focus")); });
+    const status: unknown = await (await presence).json(); expect(object(status) && status.nodeNotifications).toBe(true);
+    const delivered = await native.evaluate(() => new Promise<number>((resolve, reject) => {
+      const socket = new WebSocket(location.origin.replace(/^http/, "ws") + "/api/events"); let received = 0;
+      socket.addEventListener("message", ({ data }) => { if (JSON.parse(data).kind === "notification") received++; });
+      socket.addEventListener("error", () => reject(new Error("缺少原生测试连接")));
+      socket.addEventListener("open", () => {
+        socket.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ kind: "notification", value: { kind: "completed" } }) }));
+        socket.close(); resolve(received);
+      });
+    }));
+    expect(delivered).toBe(0); await native.close();
+  } finally {
+    receiver.terminate();
+    await context.request.delete(`${origin}/_hub/devices/${created.id}`, { headers: { Origin: origin } });
+  }
 });
 
 test("结果以 Markdown 安全排版，展开与详情跨轮询保留，复制仍为原始正文", async ({ page, context }, info) => {

@@ -58,7 +58,7 @@ Object.assign(process.env, childEnv);
 await Store.init(path.join(directory, "hub"), PASSWORD);
 const hub = await startHub({ host: "127.0.0.1", port: 19292, data: path.join(directory, "hub"), assets: fileURLToPath(new URL("../src/web/", import.meta.url)) });
 const device = await add(hub.url, await login(hub.url), "原生 o-pi");
-const agent = startNode({ ...device.config, command: [binary], cwd }, () => {});
+const agent = startNode({ ...device.config, command: [binary], cwd, notifications: false }, () => {});
 try { await agent.ready; await waitDevices(hub.url, await login(hub.url), 1); }
 catch (error) {
   await agent.close(); await hub.close(); await model.close(); await rm(directory, { recursive: true, force: true });

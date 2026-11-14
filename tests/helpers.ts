@@ -9,6 +9,7 @@ import { startNode } from "../src/node/agent.ts";
 import { Store } from "../src/hub/store.ts";
 import { object } from "../src/shared/protocol.ts";
 import type { NodeConfig } from "../src/node/config.ts";
+import type { NotificationSender } from "../src/node/system-notifications.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { FakeExecution } from "./fake-execution.ts";
 import type { ModelOption } from "../src/shared/models.ts";
@@ -262,8 +263,9 @@ export async function fakeOpi(name: string) {
     async close() { execution.close(); for (const ws of wss.clients) ws.terminate(); wss.close(); const closing = new Promise<void>((resolve) => server.close(() => resolve())); server.closeAllConnections(); await closing; },
   };
 }
+// 测试默认显式关闭本机通知；通知用例通过模拟发送器单独启用，避免依赖真实桌面。
 export function managedConfig(config: { hub: string; token: string }, upstream: string, cwd: string): NodeConfig {
-  return { ...config, command: [process.execPath, fileURLToPath(new URL("./owned-web.ts", import.meta.url)), "--upstream", upstream], cwd };
+  return { ...config, command: [process.execPath, fileURLToPath(new URL("./owned-web.ts", import.meta.url)), "--upstream", upstream], cwd, notifications: false };
 }
 export async function waitDevices(base: string, cookie: string, count: number): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -274,7 +276,7 @@ export async function waitDevices(base: string, cookie: string, count: number): 
     await delay(20);
   }
 }
-export async function fixture(port = 0) {
+export async function fixture(port = 0, notifications: { a?: NotificationSender; b?: NotificationSender } = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), "opi-hub-"));
   await Store.init(directory, PASSWORD);
   const hub = await startHub({ host: "127.0.0.1", port, data: directory, assets: fileURLToPath(new URL("../src/web/", import.meta.url)) });
@@ -283,8 +285,9 @@ export async function fixture(port = 0) {
   const cookie = await login(hub.url);
   const a = await add(hub.url, cookie, "开发台式机");
   const b = await add(hub.url, cookie, "笔记本");
-  const agentA = startNode(managedConfig(a.config, fakeA.url, directory), () => {});
-  const agentB = startNode(managedConfig(b.config, fakeB.url, directory), () => {});
+  const notifyA = notifications.a; const notifyB = notifications.b;
+  const agentA = startNode({ ...managedConfig(a.config, fakeA.url, directory), notifications: Boolean(notifyA) }, () => {}, notifyA ? async () => notifyA : undefined);
+  const agentB = startNode({ ...managedConfig(b.config, fakeB.url, directory), notifications: Boolean(notifyB) }, () => {}, notifyB ? async () => notifyB : undefined);
   await Promise.all([agentA.ready, agentB.ready]); await waitDevices(hub.url, cookie, 2);
   return {
     hub, directory, cookie, a, b, fakeA, fakeB, agentA, agentB,

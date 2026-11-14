@@ -239,6 +239,9 @@ select { font: inherit; color: var(--text); background: var(--surface); border: 
 .attention-count { color: var(--warning); opacity: 1; }
 .notification-count { color: var(--primary); opacity: 1; margin-left: 0; }
 .message-tabs, .notification-controls { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.notification-receiver { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 16px; }
+.notification-receiver label { margin: 0; font-size: 12px; color: var(--muted); }
+.notification-receiver select { flex: 1 1 180px; max-width: 320px; }
 .message-tabs [aria-selected="true"] { color: var(--primary); border-color: var(--primary); }
 .notification-card { padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
 .notification-card.unread { border-left: 3px solid var(--primary); }

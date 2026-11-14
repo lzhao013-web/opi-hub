@@ -9,10 +9,14 @@ import { isRestartBackend, type BackendReply, type NodeReport } from "../shared/
 import { validateNodeConfig } from "./config.ts";
 import { NodeRuntime } from "./runtime.ts";
 import { isTaskCommand, type TaskReply } from "../shared/tasks.ts";
+import { isNodeNotificationMessage, type NotificationSubscription } from "../shared/notifications.ts";
+import { LocalNotifications } from "./notifications.ts";
+import { createSystemNotifier, type NotificationSender } from "./system-notifications.ts";
 
 export interface NodeAgent { ready: Promise<void>; closed: Promise<void>; close(): Promise<void> }
-export function startNode(input: unknown, log: (message: string) => void = console.log): NodeAgent {
+export function startNode(input: unknown, log: (message: string) => void = console.log, notificationFactory: () => Promise<NotificationSender | null> = createSystemNotifier): NodeAgent {
   const config = validateNodeConfig(input);
+  const notifications = new LocalNotifications(config.notifications === true, log, notificationFactory);
   const abort = new AbortController();
   const sockets = new Set<WebSocket>(); const reads = new Set<AbortController>();
   const ready = Promise.withResolvers<void>();
@@ -57,6 +61,11 @@ export function startNode(input: unknown, log: (message: string) => void = conso
           try {
             if (binary || buffer(raw).byteLength > MAX_FRAME) throw new Error("无效控制帧");
             const request = parse(raw.toString());
+            if (isNodeNotificationMessage(request)) {
+              if (request.type === "completionNotification") void notifications.receive(request.notice);
+              else if (config.notifications) log(request.active ? "已订阅中心完成提醒" : "完成提醒未授权：请在消息中心绑定本机节点");
+              return;
+            }
             if (isTaskCommand(request)) {
               void (async () => {
                 let result: TaskReply;
@@ -123,6 +132,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
           } catch { control.close(1008, "Invalid control frame"); }
         });
         currentControl = control; await json(control, { type: "management", value: runtime.snapshot }); await report(control);
+        if (await notifications.ready) await json(control, { type: "subscribeNotifications", enabled: true } satisfies NotificationSubscription);
         if (first) { first = false; ready.resolve(); }
         statusTimer = setInterval(() => {
           if (Date.now() - heartbeat > 45_000) control.terminate(); else void report(control).catch(() => control.terminate());
@@ -146,6 +156,6 @@ export function startNode(input: unknown, log: (message: string) => void = conso
     }
   };
   runtime.restart();
-  const task = run().finally(async () => { abort.abort(); for (const controller of reads) controller.abort(); await runtime.close(); });
-  return { ready: ready.promise, closed: task, async close() { abort.abort(); for (const socket of sockets) socket.terminate(); await task; } };
+  const task = run().finally(async () => { abort.abort(); notifications.close(); for (const controller of reads) controller.abort(); await runtime.close(); });
+  return { ready: ready.promise, closed: task, async close() { abort.abort(); notifications.close(); for (const socket of sockets) socket.terminate(); await task; } };
 }

@@ -29,3 +29,21 @@ test("并发注册不丢失设备，重启后凭据有效，持久化不保存�
     assert.equal((await Store.open(directory)).authenticate(first.token), undefined);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test("通知授权按浏览器唯一绑定，重启后保留，撤销和不存在设备不误改其他绑定", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "opi-hub-receivers-"));
+  try {
+    await Store.init(directory, "a-long-test-password"); const store = await Store.open(directory);
+    const a = await store.add("甲"); const b = await store.add("乙"); const destination = crypto.randomUUID(); const other = crypto.randomUUID();
+    assert.equal(await store.bindNotifications(a.device.id, destination), true);
+    assert.equal((await Store.open(directory)).get(a.device.id)?.notificationDestination, destination);
+    assert.equal(await store.bindNotifications(b.device.id, destination), true);
+    assert.equal(store.get(a.device.id)?.notificationDestination, undefined); assert.equal(store.get(b.device.id)?.notificationDestination, destination);
+    assert.equal(await store.bindNotifications(a.device.id, other), true);
+    assert.equal(await store.bindNotifications(crypto.randomUUID(), destination), false);
+    assert.equal(store.get(b.device.id)?.notificationDestination, destination);
+    await assert.rejects(store.bindNotifications(a.device.id, "invalid"), /无效/);
+    assert.equal(await store.bindNotifications(null, destination), true);
+    assert.equal(store.get(b.device.id)?.notificationDestination, undefined); assert.equal(store.get(a.device.id)?.notificationDestination, other);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

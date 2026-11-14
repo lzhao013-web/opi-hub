@@ -5,6 +5,7 @@ import type { Duplex } from "node:stream";
 import path from "node:path";
 import { WebSocketServer } from "ws";
 import { NotificationCenter, notificationRoute } from "./notifications.ts";
+import { NodeNotifications } from "./node-notifications.ts";
 import { Auth } from "./auth.ts";
 import { Store } from "./store.ts";
 import { Nodes } from "./nodes.ts";
@@ -27,7 +28,8 @@ export async function startHub(options: HubOptions) {
   const store = await Store.open(options.data);
   const auth = new Auth();
   const notifications = new NotificationCenter();
-  const nodes = new Nodes((id, state) => notifications.accept(id, state));
+  const receivers = new NodeNotifications(store, notifications);
+  const nodes = new Nodes((id, state, initial) => notifications.accept(id, state, initial), receivers);
   let origin = "";
   let closed = false;
   const configured = options.publicUrl ? new URL(options.publicUrl) : undefined;
@@ -79,7 +81,7 @@ export async function startHub(options: HubOptions) {
         auth.checkOrigin(req, origin); auth.logout(req, res, secure); reply(res, 200, { ok: true }); return;
       }
       if (url.pathname === "/_hub/me" && req.method === "GET") { reply(res, 200, { authenticated: Boolean(auth.get(req)) }); return; }
-      if (await notificationRoute(url, req, res, origin, auth, notifications)) return;
+      if (await notificationRoute(url, req, res, origin, auth, notifications, receivers)) return;
       if (await scheduleRoute(url, req, res, origin, auth, scheduler)) return;
       if (url.pathname === "/_hub/overview" && req.method === "GET") {
         auth.require(req); reply(res, 200, { ...overview(store, nodes), scheduleSummary: scheduler.summary() }); return;

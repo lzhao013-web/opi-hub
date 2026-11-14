@@ -2,8 +2,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID, timingSafeEqual, scrypt } from "node:crypto";
 import { object } from "../shared/protocol.ts";
+import { isNotificationDestination } from "../shared/notifications.ts";
 
-export interface Device { id: string; name: string; tokenHash: string; createdAt: string }
+export interface Device { id: string; name: string; tokenHash: string; createdAt: string; notificationDestination?: string }
 interface Data { version: 1; passwordHash: string; devices: Device[] }
 export const secret = () => randomBytes(32).toString("base64url");
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -16,7 +17,7 @@ async function passwordHash(password: string): Promise<string> {
 }
 function isDevice(value: unknown): value is Device {
   return object(value) && typeof value.id === "string" && /^[a-f0-9-]{36}$/.test(value.id) &&
-    typeof value.name === "string" && typeof value.tokenHash === "string" && /^[a-f0-9]{64}$/.test(value.tokenHash) && typeof value.createdAt === "string";
+    typeof value.name === "string" && typeof value.tokenHash === "string" && /^[a-f0-9]{64}$/.test(value.tokenHash) && typeof value.createdAt === "string" && (value.notificationDestination === undefined || isNotificationDestination(value.notificationDestination));
 }
 export class Store {
   private writing: Promise<void> = Promise.resolve();
@@ -56,6 +57,17 @@ export class Store {
       const device: Device = { id: randomUUID(), name, tokenHash: hash(key), createdAt: new Date().toISOString() };
       data.devices.push(device);
       return { device: { ...device }, token: `${device.id}.${key}` };
+    });
+  }
+  bindNotifications(deviceId: string | null, destination: string): Promise<boolean> {
+    if (!isNotificationDestination(destination)) return Promise.reject(new Error("无效的通知接收端标识"));
+    return this.mutate((data) => {
+      const target = data.devices.find((device) => device.id === deviceId);
+      if (deviceId !== null && !target) return false;
+      // 每个浏览器配置只绑定一个节点，每个节点同时服务一个浏览器配置。
+      for (const device of data.devices) if (device.notificationDestination === destination) delete device.notificationDestination;
+      if (target) target.notificationDestination = destination;
+      return true;
     });
   }
   remove(id: string): Promise<void> {

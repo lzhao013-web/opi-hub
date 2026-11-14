@@ -7,8 +7,10 @@ import { buffer } from "../shared/sockets.ts";
 import { isSessionResponse } from "../shared/session-creation.ts";
 import { SessionRequests } from "./session-requests.ts";
 import { isTaskReply, blockingTask, type TaskInput, type TaskRecord } from "../shared/tasks.ts";
+import { isNotificationSubscription } from "../shared/notifications.ts";
+import type { NodeNotifications } from "./node-notifications.ts";
 
-interface Connection { id: string; socket: WebSocket; report?: NodeReport; management?: ManagementState; seen: number }
+interface Connection { id: string; socket: WebSocket; report?: NodeReport; management?: ManagementState; seen: number; baseline: boolean }
 interface HistoryPending { node: Connection; deviceId: string; finish: (result: HistoryEntry[] | Error) => void }
 interface ResponsePending { node: Connection; deviceId: string; finish: (error?: Error) => void }
 interface Pending { node: Connection; deviceId: string; resolve: (ws: WebSocket) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
@@ -21,11 +23,12 @@ export class Nodes {
   private answering = new Set<string>();
   private sessionRequests = new SessionRequests();
   private timer = setInterval(() => this.heartbeat(), 15_000);
-  private onManagement: (deviceId: string, state: ManagementState) => void;
-  constructor(onManagement: (deviceId: string, state: ManagementState) => void) { this.onManagement = onManagement; this.timer.unref(); }
-  status(id: string): { connected: false } | { connected: true; connectionId: string; report?: NodeReport } {
+  private onManagement: (deviceId: string, state: ManagementState, initial: boolean) => void;
+  private notifications: NodeNotifications | undefined;
+  constructor(onManagement: (deviceId: string, state: ManagementState, initial: boolean) => void, notifications?: NodeNotifications) { this.onManagement = onManagement; this.notifications = notifications; this.timer.unref(); }
+  status(id: string): { connected: false } | { connected: true; connectionId: string; report?: NodeReport; notificationSubscribed: boolean } {
     const node = this.connections.get(id);
-    return node ? { connected: true, connectionId: this.identity(node), report: node.report } : { connected: false };
+    return node ? { connected: true, connectionId: this.identity(node), report: node.report, notificationSubscribed: this.notifications?.status(id) ?? false } : { connected: false };
   }
   private identity(node: Connection): string { return `${node.id}:${node.report?.backend.generation ?? 0}`; }
   management(id: string): ManagementState | undefined { return this.connections.get(id)?.management; }
@@ -102,7 +105,7 @@ export class Nodes {
   acknowledgeTask(deviceId: string, runId: string, signal: AbortSignal) { return this.sessionRequests.taskAction(deviceId, this.sessionConnection(deviceId).socket, "acknowledgeTask", runId, signal); }
   register(id: string, socket: WebSocket): void {
     this.disconnect(id);
-    const node: Connection = { id: randomUUID(), socket, seen: Date.now() };
+    const node: Connection = { id: randomUUID(), socket, seen: Date.now(), baseline: false };
     this.connections.set(id, node);
     socket.on("pong", () => { node.seen = Date.now(); });
     socket.on("message", (raw, binary) => {
@@ -116,7 +119,12 @@ export class Nodes {
           }
           node.report = value;
         }
-        else if (isManagementMessage(value)) { node.management = value.value; this.onManagement(id, value.value); }
+        else if (isManagementMessage(value)) {
+          const initial = !node.baseline;
+          if (value.value.state === "ready") node.baseline = true;
+          node.management = value.value; this.onManagement(id, value.value, initial);
+        }
+        else if (isNotificationSubscription(value)) this.notifications?.subscribe(id, node.socket, value.enabled);
         else if (isSessionResponse(value) || isBackendReply(value) || isTaskReply(value)) this.sessionRequests.receive(node.socket, value);
         else if (isHistoryReply(value)) {
           const pending = this.histories.get(value.id);
@@ -183,6 +191,7 @@ export class Nodes {
     this.release(id);
   }
   private release(id: string): void {
+    this.notifications?.disconnect(id);
     this.sessionRequests.release(id);
     for (const pending of [...this.histories.values()]) if (pending.deviceId === id) pending.finish(new Error("设备连接中断，历史查询已取消"));
     for (const pending of [...this.responses.values()]) if (pending.deviceId === id) pending.finish(new Error("设备连接中断，请检查交互是否已处理"));
@@ -197,7 +206,7 @@ export class Nodes {
     }
   }
   close(): void {
-    clearInterval(this.timer);
+    clearInterval(this.timer); this.notifications?.close();
     for (const [id, node] of this.connections) {
       this.connections.delete(id);
       node.socket.close(1001, "Hub shutting down");

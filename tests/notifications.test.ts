@@ -8,6 +8,7 @@ import type { CompletionNotice, HubNotice } from "../src/shared/notifications.ts
 import type { ManagementState } from "../src/shared/management.ts";
 import { fixture } from "./helpers.ts";
 import { OpiClient } from "../src/adapters/opi/client.ts";
+import { object } from "../src/shared/protocol.ts";
 
 function snapshot(running: boolean, id: string | null, reason = "stop", commandRunning = false) {
   return { type: "snapshot", value: { sessionId: "session", running, commandRunning, retrying: false, compacting: false, queue: { steering: [], followUp: [] }, entries: id ? [{ id, messages: [{ role: "assistant", content: "不能保留的正文", stopReason: reason }] }] : [], streamingMessage: null } };
@@ -67,6 +68,13 @@ test("真实节点无会话页面时同步完成，SSE 在后台持续推送，�
   try {
     assert.equal((await fetch(env.hub.url + "/_hub/notifications")).status, 401);
     assert.equal((await fetch(env.hub.url + "/_hub/notifications/events")).status, 401);
+    // ready 只表示目录已连接，审批会话的独立订阅可能还在握手，先等待夹具的两个审批到齐。
+    const pending = async () => {
+      const value: unknown = await (await fetch(env.hub.url + "/_hub/overview", { headers })).json();
+      assert.ok(object(value) && Array.isArray(value.interactions)); return value.interactions.length;
+    };
+    const initialized = Date.now() + 5000;
+    while (await pending() !== 2) { assert.ok(Date.now() < initialized, "审批订阅未就绪"); await delay(20); }
     const stream = await fetch(env.hub.url + "/_hub/notifications/events", { headers, signal: controller.signal }); assert.equal(stream.status, 200);
     const reader = stream.body?.getReader(); assert.ok(reader); await reader.read();
     await client.ready; await client.action({ action: "prompt", text: "完成但没有 Web 页面", images: [], behavior: "followUp" }, "runtime-1");
@@ -80,7 +88,7 @@ test("真实节点无会话页面时同步完成，SSE 在后台持续推送，�
     const claims = await Promise.all(requests.map(async (response) => { const value: unknown = await response.json(); assert.ok(typeof value === "object" && value !== null && "claimed" in value); return value.claimed; }));
     assert.deepEqual(claims.sort(), [false, true]);
     assert.equal((await post("/_hub/notifications/read", { id: item.id })).status, 200); assert.equal((await read())[0]?.read, true);
-    const overview: { interactions: unknown[] } = await (await fetch(env.hub.url + "/_hub/overview", { headers })).json(); assert.equal(overview.interactions.length, 2);
+    assert.equal(await pending(), 2);
     await client.action({ action: "prompt", text: "ERROR 不能误报完成", images: [], behavior: "followUp" }, "runtime-1");
     await client.synchronize(AbortSignal.timeout(5000));
     env.fakeA.disconnectClients();

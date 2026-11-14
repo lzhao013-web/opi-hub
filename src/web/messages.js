@@ -2,12 +2,13 @@ import { create, sessionUrl } from "./management.js";
 
 const $ = (id) => document.getElementById(id);
 export class MessageCenter {
-  constructor(request, changed, openRun, authLost) {
-    this.request = request; this.changed = changed; this.openRun = openRun; this.authLost = authLost;
+  constructor(request, changed, openRun, authLost, refresh) {
+    this.request = request; this.changed = changed; this.openRun = openRun; this.authLost = authLost; this.refresh = refresh; this.binding = false; this.generation = 0;
     this.notices = []; this.devices = []; this.viewers = new Map(); this.handled = new Set(); this.popups = new Set(); this.tab = "pending";
     $("messages-pending").onclick = () => { this.tab = "pending"; this.automatic = false; this.render(); };
     $("messages-notifications").onclick = () => { this.tab = "notifications"; this.automatic = false; this.render(); };
     $("notifications-read-all").onclick = () => { void this.read(null); };
+    $("notification-receiver").onchange = () => { void this.bindReceiver(); };
     $("enable-notifications").onclick = async () => {
       try { await Notification.requestPermission(); this.permission(); }
       catch (error) { this.error(error.message); }
@@ -44,6 +45,7 @@ export class MessageCenter {
     this.permission();
   }
   clear() {
+    this.generation++; this.binding = false; this.devices = []; $("notification-receiver-error").hidden = true; delete $("notification-receiver").dataset.signature;
     this.source?.close(); this.source = null; clearInterval(this.timer); this.channel?.close(); this.channel = null;
     for (const popup of this.popups) popup.close(); this.popups.clear();
     this.notices = []; this.handled.clear(); this.viewers.clear(); $("notification-list").replaceChildren(); $("notification-toasts").replaceChildren(); delete $("notification-list").dataset.signature; this.error("");
@@ -51,13 +53,38 @@ export class MessageCenter {
   error(message) { $("notification-error").textContent = message; $("notification-error").hidden = !message; }
   open(tab) { this.automatic = tab === undefined; this.tab = tab ?? (this.pending ? "pending" : "notifications"); }
   update(data) { this.devices = data.devices; this.pending = data.interactions.length; this.render(); }
+  receiverOptions() {
+    const select = $("notification-receiver"); select.disabled = this.binding;
+    const signature = JSON.stringify([this.destination, this.devices.map((device) => [device.id, device.name, device.notificationDestination])]);
+    if (select.dataset.signature === signature || this.binding) return;
+    select.dataset.signature = signature; select.replaceChildren();
+    const browser = create("option", "", "此浏览器"); browser.value = ""; select.append(browser);
+    for (const device of this.devices) { const option = create("option", "", device.name); option.value = device.id; select.append(option); }
+    select.value = this.devices.find((device) => device.notificationDestination === this.destination)?.id ?? "";
+  }
+  async bindReceiver() {
+    if (this.binding || !this.destination) return;
+    const generation = this.generation; const deviceId = $("notification-receiver").value || null;
+    this.binding = true; this.receiverOptions(); $("notification-receiver-error").hidden = true;
+    try {
+      await this.request("/_hub/notifications/receiver", { method: "POST", body: JSON.stringify({ deviceId, destination: this.destination }) });
+      if (generation === this.generation) await this.refresh();
+    } catch (error) {
+      if (generation === this.generation) { $("notification-receiver-error").textContent = error.message; $("notification-receiver-error").hidden = false; }
+    } finally { if (generation === this.generation) { this.binding = false; delete $("notification-receiver").dataset.signature; this.receiverOptions(); this.permission(); } }
+  }
   permission() {
+    const receiver = this.devices.find((device) => device.notificationDestination === this.destination);
+    const active = receiver?.connected && receiver.notificationSubscribed;
     const supported = window.isSecureContext && "Notification" in window;
     const permission = supported ? Notification.permission : "unsupported";
-    $("enable-notifications").hidden = permission !== "default";
-    $("notification-permission").textContent = permission === "granted" ? "系统通知已允许。Hub 页面可在后台，全部关闭后不推送。" : permission === "denied" ? "系统通知已被拒绝，可在浏览器站点设置中修改。站内提醒仍可用。" : permission === "unsupported" ? "系统通知需要支持通知的浏览器及 HTTPS 或 localhost。站内提醒仍可用。" : "允许系统通知后，即使 Hub 在后台也能收到提醒。";
+    $("enable-notifications").hidden = active || permission !== "default";
+    const browser = permission === "granted" ? "浏览器系统通知已允许，关闭全部 Hub 页面后不推送。" : permission === "denied" ? "浏览器系统通知已被拒绝，可在站点设置中修改。" : permission === "unsupported" ? "浏览器系统通知需要 HTTPS 或 localhost。" : "可允许浏览器系统通知，在 Hub 页面保持打开时接收提醒。";
+    $("notification-permission").textContent = active ? `已授权“${receiver.name}”节点接收各设备的完成摘要，由它发送系统通知；关闭网页后仍可接收，已绑定浏览器不重复弹出，实际显示仍受系统权限和勿扰模式限制。` :
+      (receiver ? `“${receiver.name}”节点未订阅：请确认本机未设置 notifications: false、节点在线且系统通知工具可用。目前回退浏览器提醒。` : "选择本机节点可授权它接收各设备的完成摘要，不依赖浏览器 HTTPS 权限。") + ` ${browser} 站内完成记录始终保留。`;
   }
   render() {
+    this.receiverOptions(); this.permission();
     if (this.automatic && this.pending) this.tab = "pending";
     const unread = this.notices.filter((notice) => !notice.read).length;
     $("notification-count").textContent = unread ? `未读 ${unread}` : "";

@@ -8,13 +8,15 @@
   const viewerId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, "0")).join("");
   let destination = localStorage.getItem("opi-hub.notification-destination");
   if (!destination) { destination = viewerId.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5"); localStorage.setItem("opi-hub.notification-destination", destination); }
-  let selectedId = null; let lastHub = 0; let closed = false; let sequence = 0;
+  let selectedId = null; let lastHub = 0; let nodeNotificationsUntil = 0; let closed = false; let sequence = 0;
   const presence = (leaving = false) => {
     if (closed) return;
     const value = { type: "viewer", id: viewerId, deviceId: prefix.split("/")[2], sessionId: selectedId, focused: !leaving && document.visibilityState === "visible" && document.hasFocus() };
     channel.postMessage(value);
     // 查看状态是可过期的提示。断网或页面退出时上报失败不影响原生会话。
-    void fetch("/_hub/notifications/presence", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageId: viewerId, sequence: ++sequence, deviceId: value.deviceId, sessionId: selectedId, destination, focused: value.focused }) }).catch(() => {});
+    const sent = ++sequence;
+    void fetch("/_hub/notifications/presence", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageId: viewerId, sequence: sent, deviceId: value.deviceId, sessionId: selectedId, destination, focused: value.focused }) })
+      .then(async (response) => { if (!response.ok) return; const status = await response.json(); if (sent === sequence) nodeNotificationsUntil = status.nodeNotifications === true ? Date.now() + 12_000 : 0; }).catch(() => {});
   };
   channel.onmessage = ({ data }) => { if (data?.type === "hub") { lastHub = Date.now(); presence(); } };
   for (const event of ["focus", "blur"]) window.addEventListener(event, () => presence());
@@ -51,8 +53,8 @@
       this.addEventListener("message", (event) => {
         let delivery;
         try { delivery = JSON.parse(event.data); } catch { return; }
-        // Hub 存活时由消息中心统一提醒，避免同一浏览器再弹原生完成通知。
-        if (delivery.kind === "notification" && delivery.value?.kind === "completed" && Date.now() - lastHub < 12_000) { event.stopImmediatePropagation(); return; }
+        // Hub 页面或已授权的本机节点负责提醒时，不再重复投递原生完成弹窗。
+        if (delivery.kind === "notification" && delivery.value?.kind === "completed" && (Date.now() - lastHub < 12_000 || Date.now() < nodeNotificationsUntil)) { event.stopImmediatePropagation(); return; }
         if ((delivery.kind !== undefined && delivery.kind !== "frame") || !Array.isArray(delivery.events)) return;
         for (const item of delivery.events) {
           if (item.type === "selected") { selectedId = item.session?.id ?? null; presence(); }
