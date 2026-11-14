@@ -45,7 +45,7 @@ await writeFile(path.join(agentDir, "extensions", "hub-test.js"), `export defaul
 await writeFile(path.join(cwd, "hello.txt"), "原生 o-pi 远程文件预览\n");
 const model = await startModel();
 await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "never", defaultProvider: "hub-fixture", defaultModel: "test", compaction: { enabled: false }, retry: { enabled: false } }));
-await writeFile(path.join(agentDir, "models.json"), JSON.stringify({ providers: { "hub-fixture": { api: "openai-completions", baseUrl: model.url, apiKey: "fixture", models: [{ id: "test", name: "Fixture", input: ["text"], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
+await writeFile(path.join(agentDir, "models.json"), JSON.stringify({ providers: { "hub-fixture": { api: "openai-completions", baseUrl: model.url, apiKey: "fixture", models: ["test", "test-alt"].map((id) => ({ id, name: id === "test" ? "Fixture" : "Fixture Alternate", input: ["text"], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) } } }));
 await writeFile(path.join(agentDir, "configs", "auto-title.jsonc"), '{"enabled":false}');
 await writeFile(path.join(agentDir, "configs", "discord-presence.jsonc"), '{"enabled":false}');
 const binary = path.join(directory, process.platform === "win32" ? "opi-web.exe" : "opi-web");
@@ -59,7 +59,11 @@ await Store.init(path.join(directory, "hub"), PASSWORD);
 const hub = await startHub({ host: "127.0.0.1", port: 19292, data: path.join(directory, "hub"), assets: fileURLToPath(new URL("../src/web/", import.meta.url)) });
 const device = await add(hub.url, await login(hub.url), "原生 o-pi");
 const agent = startNode({ ...device.config, command: [binary], cwd }, () => {});
-await agent.ready; await waitDevices(hub.url, await login(hub.url), 1);
+try { await agent.ready; await waitDevices(hub.url, await login(hub.url), 1); }
+catch (error) {
+  await agent.close(); await hub.close(); await model.close(); await rm(directory, { recursive: true, force: true });
+  throw error;
+}
 console.log(`Native fixture: ${hub.url}`);
 process.send?.("ready");
 let closing = false;

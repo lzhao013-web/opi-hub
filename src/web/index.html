@@ -25,7 +25,7 @@
         <button id="overview-nav" class="nav-item selected" type="button"><span>概览</span></button>
         <button id="schedules-nav" class="nav-item" type="button"><span>计划任务</span><span id="schedule-attention" class="count"></span></button>
         <button id="history-nav" class="nav-item" type="button"><span>查找历史</span></button>
-        <button id="all-interactions" class="nav-item" type="button"><span>待处理交互</span><span id="interaction-count" class="count">0</span></button>
+        <button id="all-interactions" class="nav-item" type="button"><span>消息中心</span><span id="interaction-count" class="count attention-count"></span><span id="notification-count" class="count notification-count"></span></button>
         <button id="all-devices" class="nav-item" type="button"><span>全部设备</span><span id="device-count" class="count">0</span></button>
       </nav>
       <div class="sidebar-heading"><span>我的设备</span><button class="icon-button" id="add-sidebar" type="button" title="添加设备" aria-label="添加设备">+</button></div>
@@ -65,19 +65,30 @@
           <p class="section-caption muted">每次运行新建专用会话，仍遵循原审批规则。离线或错过不补跑，上次未结束或结果未知时不重入。暂停只影响未来触发，不停止当前运行。</p>
           <p id="schedule-page-error" class="notice" role="alert" hidden></p>
           <h2 class="section-title">计划</h2><div id="schedule-plans" class="plan-list"></div>
-          <h2 class="section-title">最近运行</h2><p class="section-caption muted">展示全部未结束或待核对运行，以及最近 50 次记录。已结束表示 SDK 执行结束，不代表任务内容已验证成功。修改任务请停用旧计划后新建。</p><div id="schedule-runs" class="plan-list"></div>
+          <h2 class="section-title">运行记录</h2><p class="section-caption muted">进行中与待核对记录优先显示，历史按触发日期分组，保留最近 50 次记录。已结束仅表示执行结束，不代表内容已验证成功。</p><div id="schedule-runs" class="plan-list"></div>
         </section>
-        <section id="interactions" class="interaction-list" aria-label="待处理交互" hidden></section>
+        <section id="message-center" aria-label="消息中心" hidden>
+          <div class="message-tabs" role="tablist" aria-label="消息分区"><button id="messages-pending" class="secondary" type="button" role="tab" aria-controls="interactions" aria-selected="true">待处理 (0)</button><button id="messages-notifications" class="secondary" type="button" role="tab" aria-controls="notifications-panel" aria-selected="false">通知 (0)</button></div>
+          <p id="notification-error" class="notice" role="status" hidden></p>
+          <section id="interactions" class="interaction-list" role="tabpanel" aria-labelledby="messages-pending"></section>
+          <section id="notifications-panel" role="tabpanel" aria-labelledby="messages-notifications" hidden>
+            <div class="notification-controls"><button id="enable-notifications" class="secondary" type="button" hidden>允许系统通知</button><button id="notifications-read-all" class="text-button" type="button">全部标为已读</button></div>
+            <p id="notification-permission" class="section-caption muted"></p><div id="notification-list" class="plan-list"></div>
+          </section>
+        </section>
         <div id="devices" class="devices" aria-live="polite" hidden></div>
         <div id="empty" class="empty" hidden><div class="monitor-icon large" aria-hidden="true"></div><h2>从第一台设备开始</h2><p class="muted">添加设备并运行连接程序，即可在这里打开它的原生 o-pi 界面。</p><button id="add-empty" class="primary" type="button">添加设备</button></div>
         <footer class="content-footer">文件、模型凭据和运行环境留在设备上。中心负责连接与转发。</footer>
       </section>
     </main>
   </div>
+  <aside id="notification-toasts" class="notification-toasts" aria-label="完成提醒" aria-live="polite"></aside>
   <dialog id="schedule-dialog" aria-labelledby="schedule-title"><form id="schedule-form">
     <div class="dialog-heading"><h2 id="schedule-title">新建计划任务</h2><button id="schedule-close" class="icon-button" type="button" aria-label="关闭计划任务">×</button></div>
     <label for="schedule-name">计划名称</label><input id="schedule-name" required maxlength="80">
     <label for="schedule-device">计划设备</label><select id="schedule-device" required></select>
+    <label for="schedule-model">任务模型</label><select id="schedule-model"><option value="">沿用设备默认</option></select>
+    <p id="schedule-model-hint" class="footnote">选择设备后显示可用模型，仅影响本计划的新会话。</p>
     <label for="schedule-path">任务目录</label><input id="schedule-path" required maxlength="4096" placeholder="目标设备上的已有绝对目录">
     <label for="schedule-prompt">任务描述</label><textarea id="schedule-prompt" rows="4" required maxlength="16384" placeholder="描述交给 o-pi 的任务，不接受 ! 或 / 命令"></textarea>
     <div class="schedule-fields"><div><label for="schedule-kind">执行频率</label><select id="schedule-kind"><option value="once">一次性</option><option value="daily">每天</option><option value="weekly">每周</option><option value="interval">日期范围内循环</option><option value="dailyInterval">每日时段内循环</option></select></div><div><label for="schedule-zone">时区</label><input id="schedule-zone" required placeholder="Asia/Shanghai 或 UTC" maxlength="100"></div></div>
@@ -91,7 +102,7 @@
     </section>
     <fieldset id="schedule-days" class="schedule-days" hidden><legend>执行星期</legend><label><input type="checkbox" value="1">一</label><label><input type="checkbox" value="2">二</label><label><input type="checkbox" value="3">三</label><label><input type="checkbox" value="4">四</label><label><input type="checkbox" value="5">五</label><label><input type="checkbox" value="6">六</label><label><input type="checkbox" value="7">日</label></fieldset>
     <label for="schedule-timeout">最长运行时间（分钟）</label><input id="schedule-timeout" type="number" min="1" max="180" value="30" required>
-    <p class="footnote">中心需保持运行。每台设备最多一个计划运行，包含等待审批的时间。计划和任务描述会保存到中心数据库，模型沿用设备默认配置。</p>
+    <p class="footnote">中心需保持运行。每台设备最多一个计划运行，包含等待审批的时间。计划和任务描述会保存到中心数据库，可为计划指定模型，不修改设备默认配置。指定模型不可用时运行失败，不自动换模型。</p>
     <p id="schedule-form-error" class="error" role="alert" hidden></p><div class="dialog-actions"><button id="schedule-submit" class="primary" type="submit">保存计划</button></div>
   </form></dialog>
   <dialog id="schedule-confirm" aria-labelledby="schedule-confirm-title"><form id="schedule-confirm-form"><h2 id="schedule-confirm-title">确认计划操作</h2><p id="schedule-confirm-text"></p><div class="dialog-actions"><button id="schedule-confirm-cancel" class="secondary" type="button">取消</button><button class="primary" type="submit">确认操作</button></div></form></dialog>
@@ -103,7 +114,7 @@
     <p class="footnote">目录来自目标设备。可输入完整路径切换磁盘，不会自动创建文件夹。</p>
     <section id="directory-browser" class="directory-browser" aria-label="远程目录" hidden><p id="directory-status" class="directory-status" role="status"></p><div class="directory-actions"><button id="directory-parent" class="secondary" type="button" disabled>上一级</button><button id="use-directory" class="secondary" type="button" disabled>使用此目录</button></div><div id="directory-list" class="directory-list"></div></section>
     <p id="create-error" class="error" role="alert" hidden></p>
-    <p class="footnote">创建时若需信任项目，请在“待处理交互”回答。完成后可从创建记录打开原生会话。关闭弹窗或刷新页面不会撤销已经提交的创建。</p>
+    <p class="footnote">创建时若需信任项目，请在“消息中心 → 待处理”回答。完成后可从创建记录打开原生会话。关闭弹窗或刷新页面不会撤销已经提交的创建。</p>
     <div class="dialog-actions"><button id="create-submit" class="primary" type="submit">创建会话</button></div>
   </form></dialog>
   <dialog id="enroll-dialog" aria-labelledby="enroll-title">

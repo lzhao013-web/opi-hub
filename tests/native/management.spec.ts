@@ -34,7 +34,7 @@ test("真实会话直达和后台审批订阅不切换原页面，中心回答�
   // 尚未进入全局目录的空白会话，也应通过转发连接被发现。
   await editor.fill("/hub-test-confirm"); await editor.press("ControlOrMeta+Enter");
   await expect(native.getByRole("dialog")).toBeVisible();
-  await page.bringToFront(); await page.getByRole("button", { name: /待处理交互/ }).click();
+  await page.bringToFront(); await page.getByRole("button", { name: /消息中心/ }).click();
   const first = page.locator(".interaction").filter({ has: page.getByRole("heading", { name: "原生远程审批", exact: true }) });
   await expect(first).toBeVisible();
   await first.getByRole("button", { name: "确认", exact: true }).click();
@@ -42,7 +42,7 @@ test("真实会话直达和后台审批订阅不切换原页面，中心回答�
   // 直接用户 Shell 输入只在隔离工作区运行 echo，使会话进入原生运行目录，不调用模型。
   await editor.fill("!echo hub-management-test");
   const shell = native.waitForResponse((response) => response.url().endsWith("/api/action") && response.request().postData()?.includes("hub-management-test") === true);
-  await editor.press("ControlOrMeta+Enter"); await shell;
+  await native.getByRole("textbox", { name: "执行命令", exact: true }).press("ControlOrMeta+Enter"); await shell;
   await page.bringToFront();
   await page.locator("#device-nav").getByRole("button", { name: "原生 o-pi", exact: true }).click();
   await page.locator(".workspace-card").filter({ has: page.getByText("workspace", { exact: true }) }).click();
@@ -57,7 +57,7 @@ test("真实会话直达和后台审批订阅不切换原页面，中心回答�
   await editor.fill("/hub-test-confirm"); await editor.press("ControlOrMeta+Enter");
   await expect(native.getByRole("dialog")).toBeVisible();
   await page.bringToFront();
-  await page.getByRole("button", { name: /待处理交互/ }).click();
+  await page.getByRole("button", { name: /消息中心/ }).click();
   const approval = page.locator(".interaction").filter({ has: page.getByRole("heading", { name: "原生远程审批", exact: true }) });
   await expect(approval).toBeVisible();
   await approval.getByRole("button", { name: "确认", exact: true }).click();
@@ -81,7 +81,7 @@ test("原页面关闭后仍能回答未落盘会话的交互", async ({ page, co
   const editor = native.getByRole("textbox", { name: "消息", exact: true });
   await editor.fill("/hub-test-confirm"); await editor.press("ControlOrMeta+Enter");
   await expect(native.getByRole("dialog")).toBeVisible();
-  await page.bringToFront(); await page.getByRole("button", { name: /待处理交互/ }).click();
+  await page.bringToFront(); await page.getByRole("button", { name: /消息中心/ }).click();
   const approval = page.locator(".interaction").filter({ has: page.getByRole("heading", { name: "原生远程审批", exact: true }) });
   await expect(approval).toBeVisible();
   const url = await approval.getByRole("link", { name: "查看会话" }).getAttribute("href");

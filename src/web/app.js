@@ -4,6 +4,7 @@ import { Navigation, workspaceName } from "./navigation.js";
 import { WorkspaceViews } from "./views.js";
 import { CreateSessionView } from "./create-session.js";
 import { BackendControls, backendLabel } from "./backend.js";
+import { MessageCenter } from "./messages.js";
 import { ScheduleView } from "./schedules.js";
 
 const $ = (id) => {
@@ -25,7 +26,8 @@ const navigation = new Navigation(selectScope);
 const views = new WorkspaceViews(history, selectScope);
 const backendControls = new BackendControls(request, refresh);
 const schedules = new ScheduleView(request);
-const creator = new CreateSessionView(request, refresh, () => { scope = null; view = "interactions"; render(); });
+const messages = new MessageCenter(request, () => { if (authenticated) render(); }, (runId) => { scope = null; view = "schedules"; render(); void schedules.focusRun(runId); }, showLogin);
+const creator = new CreateSessionView(request, refresh, () => { scope = null; view = "interactions"; messages.open("pending"); render(); });
 const text = (id, value) => { $(id).textContent = value; };
 function message(id, value) { text(id, value); $(id).hidden = !value; }
 async function request(url, options = {}) {
@@ -38,7 +40,7 @@ async function request(url, options = {}) {
   return value;
 }
 function showLogin() {
-  authenticated = false; pendingRead++; clearTimeout(timer); management.clear(); history.clear(); views.clear(); creator.clear(); backendControls.clear(); schedules.clear();
+  authenticated = false; pendingRead++; clearTimeout(timer); management.clear(); history.clear(); views.clear(); creator.clear(); backendControls.clear(); schedules.clear(); messages.clear();
   overview = { devices: [], workspaces: [], sessions: [], interactions: [], creations: [] }; devices = []; scope = null; view = "overview";
   $("workspace").hidden = true; $("login").hidden = false;
   for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
@@ -47,7 +49,7 @@ function showLogin() {
 async function showWorkspace() {
   authenticated = true; $("login").hidden = true; $("workspace").hidden = false;
   $("password").value = "";
-  await refresh();
+  messages.start(); await refresh();
 }
 async function refresh() {
   clearTimeout(timer);
@@ -75,17 +77,17 @@ function render() {
   if (scope && !devices.some((device) => device.id === scope.deviceId)) { scope = null; view = "overview"; }
   const online = devices.filter((device) => device.connected).length;
   const running = overview.sessions.filter((session) => ["running", "loading"].includes(session.state)).length;
-  text("device-count", String(devices.length)); text("interaction-count", String(overview.interactions.length));
+  text("device-count", String(devices.length)); text("interaction-count", overview.interactions.length ? `待处理 ${overview.interactions.length}` : "");
   text("summary-text", `${online} 台在线 · ${running} 个运行 · ${overview.interactions.length} 个待处理交互`);
   const chosen = devices.find((device) => device.id === scope?.deviceId);
-  const titles = { overview: "概览", device: chosen?.name, workspace: scope?.cwd ? workspaceName(scope.cwd) : "工作区", history: "查找历史", schedules: "计划任务", interactions: "待处理交互", devices: "你的设备" };
-  const descriptions = { overview: "关注正在进行的工作，不展开全部历史。", device: "选择工作区后浏览会话，历史按需读取。", workspace: "当前工作区的会话与按需历史。", history: "明确查询时才读取历史，不在首页铺开。", schedules: "预约设备上的代理任务，执行记录与会话分开管理。", interactions: "集中处理各设备的审批、确认和输入。", devices: "管理设备连接，或打开完整的原生 o-pi 界面。" };
+  const titles = { overview: "概览", device: chosen?.name, workspace: scope?.cwd ? workspaceName(scope.cwd) : "工作区", history: "查找历史", schedules: "计划任务", interactions: "消息中心", devices: "你的设备" };
+  const descriptions = { overview: "关注正在进行的工作，不展开全部历史。", device: "选择工作区后浏览会话，历史按需读取。", workspace: "当前工作区的会话与按需历史。", history: "明确查询时才读取历史，不在首页铺开。", schedules: "预约设备上的代理任务，执行记录与会话分开管理。", interactions: "待处理交互与完成通知分区展示，已读通知不等于已审批。", devices: "管理设备连接，或打开完整的原生 o-pi 界面。" };
   text("heading", titles[view]); text("breadcrumb", chosen && view === "workspace" ? `${chosen.name} / ${titles[view]}` : titles[view]); text("page-description", descriptions[view]);
   $("selected-workspace").hidden = view !== "workspace"; text("selected-workspace", scope?.cwd ?? "");
   for (const [name, id] of [["overview", "overview-nav"], ["schedules", "schedules-nav"], ["history", "history-nav"], ["interactions", "all-interactions"], ["devices", "all-devices"]]) $(id).classList.toggle("selected", !scope && view === name);
-  for (const [name, id] of [["overview", "overview-view"], ["device", "device-view"], ["workspace", "workspace-view"], ["history", "history-view"], ["schedules", "schedules-view"], ["interactions", "interactions"], ["devices", "devices"]]) $(id).hidden = view !== name;
+  for (const [name, id] of [["overview", "overview-view"], ["device", "device-view"], ["workspace", "workspace-view"], ["history", "history-view"], ["schedules", "schedules-view"], ["interactions", "message-center"], ["devices", "devices"]]) $(id).hidden = view !== name;
   navigation.render(overview, scope); views.render(overview, view, scope, $("session-search").value);
-  management.render(overview, scope?.deviceId ?? null, view); creator.update(overview); schedules.update(overview, view === "schedules");
+  management.render(overview, scope?.deviceId ?? null, view); creator.update(overview); schedules.update(overview, view === "schedules"); messages.update(overview);
   $("new-session").hidden = view === "schedules"; $("add-schedule").hidden = view !== "schedules"; $("add-schedule").disabled = !devices.length;
   const attention = overview.scheduleSummary?.unknown ?? 0; const scheduleError = overview.scheduleSummary?.error;
   text("schedule-attention", attention ? String(attention) : ""); $("schedule-alert").hidden = !attention && !scheduleError;
@@ -136,7 +138,7 @@ $("logout").addEventListener("click", async () => {
   try { await request("/_hub/logout", { method: "POST", body: "{}" }); showLogin(); }
   catch (error) { message("workspace-error", error.message); }
 });
-for (const [name, id] of [["overview", "overview-nav"], ["schedules", "schedules-nav"], ["history", "history-nav"], ["interactions", "all-interactions"], ["devices", "all-devices"]]) $(id).addEventListener("click", () => { scope = null; view = name; render(); });
+for (const [name, id] of [["overview", "overview-nav"], ["schedules", "schedules-nav"], ["history", "history-nav"], ["interactions", "all-interactions"], ["devices", "all-devices"]]) $(id).addEventListener("click", () => { scope = null; view = name; if (name === "interactions") messages.open(); render(); });
 $("new-session").addEventListener("click", () => creator.open(scope));
 $("add-schedule").addEventListener("click", () => schedules.open(scope));
 $("schedule-workspace").addEventListener("click", () => schedules.open(scope));

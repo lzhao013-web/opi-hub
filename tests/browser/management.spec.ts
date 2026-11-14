@@ -51,6 +51,7 @@ test("概览不加载历史，设备工作区按需浏览，集中交互仍双�
   expect(histories).toHaveLength(2);
   await page.screenshot({ path: info.outputPath("overview.png"), fullPage: true });
   await page.getByRole("button", { name: /全部设备/ }).click();
+  const previousDialogs = await page.locator(".interaction").evaluateAll((cards) => cards.map((card) => card.getAttribute("data-dialog-id")));
   const windows = [];
   for (const name of ["开发台式机", "笔记本"]) {
     const card = page.locator(".device").filter({ has: page.getByRole("heading", { name, exact: true }) });
@@ -60,7 +61,8 @@ test("概览不加载历史，设备工作区按需浏览，集中交互仍双�
   }
   const nativeA = windows[0]; const nativeB = windows[1];
   if (!nativeA || !nativeB) throw new Error("缺少测试窗口");
-  await page.bringToFront(); await page.getByRole("button", { name: /待处理交互/ }).click();
+  await page.bringToFront(); await page.getByRole("button", { name: /消息中心/ }).click();
+  await expect.poll(() => page.locator(".interaction").evaluateAll((cards, old) => cards.every((card) => !old.includes(card.getAttribute("data-dialog-id"))), previousDialogs)).toBe(true);
   await expect(page.locator(".interaction")).toHaveCount(2);
   const approvalA = page.locator(".interaction").filter({ has: page.getByRole("heading", { name: "设备 A 的远程审批", exact: true }) });
   await approvalA.getByRole("button", { name: "确认", exact: true }).click();
