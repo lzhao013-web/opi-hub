@@ -5,7 +5,7 @@ test("托管后端显示 PID 和日志，重启需要确认并使页面历史缓
   if (info.project.name === "phone") await page.getByRole("combobox", { name: "设备与工作区", exact: true }).selectOption({ label: "/fixture/设备 B/other" });
   else {
     await page.locator("#device-nav").getByRole("button", { name: "笔记本", exact: true }).click();
-    await page.locator(".workspace-card").filter({ hasText: "/fixture/设备 B/other" }).click();
+    await page.getByRole("button", { name: "进入工作区 /fixture/设备 B/other", exact: true }).click();
   }
   await page.getByRole("button", { name: "加载历史会话", exact: true }).click(); await expect(page.locator("#history-status")).toContainText("已加载");
   await page.getByRole("button", { name: /全部设备/ }).click();
@@ -23,7 +23,7 @@ test("托管后端显示 PID 和日志，重启需要确认并使页面历史缓
   if (info.project.name === "phone") await page.getByRole("combobox", { name: "设备与工作区", exact: true }).selectOption({ label: "/fixture/设备 B/other" });
   else {
     await page.locator("#device-nav").getByRole("button", { name: "笔记本", exact: true }).click();
-    await page.locator(".workspace-card").filter({ hasText: "/fixture/设备 B/other" }).click();
+    await page.getByRole("button", { name: "进入工作区 /fixture/设备 B/other", exact: true }).click();
   }
   await expect(page.getByRole("button", { name: "加载历史会话", exact: true })).toBeVisible();
   await expect(page.locator("#history-status")).toContainText("尚未读取");

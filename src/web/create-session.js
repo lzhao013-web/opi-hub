@@ -22,10 +22,12 @@ export class CreateSessionView {
     $("create-form").addEventListener("submit", (event) => { event.preventDefault(); void this.submit(); });
   }
   available(device) { return device?.connected && device.report?.ready && device.management.state === "ready"; }
+  canCreate(device) { return !this.submitting && this.available(device); }
   setError(message) { $("create-error").textContent = message; $("create-error").hidden = !message; }
   cancelBrowse() { this.browseJob?.controller.abort(); this.browseJob = null; }
   clear() { this.generation++; this.cancelBrowse(); this.submitting = false; this.dismissed.clear(); this.data = { devices: [], creations: [] }; $("creation-records").replaceChildren(); delete $("creation-records").dataset.signature; $("creation-error").hidden = true; }
   open(scope) {
+    if (this.submitting) return;
     this.generation++; this.creationId = creationId(); this.cancelBrowse(); this.setError("");
     $("create-path").value = scope?.cwd ?? ""; $("directory-browser").hidden = true; $("directory-list").replaceChildren();
     this.deviceOptions(); $("create-device").value = scope?.deviceId ?? ""; this.enable(); $("create-dialog").showModal();
@@ -44,10 +46,10 @@ export class CreateSessionView {
   }
   enable() {
     const device = this.data.devices.find((item) => item.id === $("create-device").value);
-    $("create-submit").disabled = this.submitting || !this.available(device);
-    $("browse-directory").disabled = this.submitting || !this.available(device);
+    $("create-submit").disabled = !this.canCreate(device);
+    $("browse-directory").disabled = !this.canCreate(device);
     $("create-device").disabled = this.submitting; $("create-path").disabled = this.submitting;
-    $("new-session").disabled = this.submitting || !this.data.devices.some((device) => this.available(device));
+    $("new-session").disabled = !this.data.devices.some((device) => this.canCreate(device));
   }
   update(data) {
     this.data = data; this.deviceOptions(); this.enable();

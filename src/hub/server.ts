@@ -50,6 +50,7 @@ export async function startHub(options: HubOptions) {
     "/_hub/management.js": { file: "management.js", type: "text/javascript; charset=utf-8" },
     "/_hub/history.js": { file: "history.js", type: "text/javascript; charset=utf-8" },
     "/_hub/navigation.js": { file: "navigation.js", type: "text/javascript; charset=utf-8" },
+    "/_hub/workspace-tree.js": { file: "workspace-tree.js", type: "text/javascript; charset=utf-8" },
     "/_hub/views.js": { file: "views.js", type: "text/javascript; charset=utf-8" },
     "/_hub/create-session.js": { file: "create-session.js", type: "text/javascript; charset=utf-8" },
     "/_hub/backend.js": { file: "backend.js", type: "text/javascript; charset=utf-8" },

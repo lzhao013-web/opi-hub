@@ -19,7 +19,7 @@ test("概览不加载历史，设备工作区按需浏览，集中交互仍双�
     await page.getByRole("combobox", { name: "设备与工作区", exact: true }).selectOption({ label: "/fixture/设备 A/other" });
   } else {
     await page.locator("#device-nav").getByRole("button", { name: "开发台式机", exact: true }).click();
-    await page.locator(".workspace-card").filter({ hasText: "/fixture/设备 A/other" }).click();
+    await page.getByRole("button", { name: "进入工作区 /fixture/设备 A/other", exact: true }).click();
   }
   await expect(page.getByRole("heading", { name: "other", exact: true })).toBeVisible();
   // 已被其他页面打开的旧会话属于运行实例，但未加载的历史不会混入当前视图。

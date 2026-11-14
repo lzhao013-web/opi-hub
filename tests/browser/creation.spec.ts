@@ -33,7 +33,7 @@ test("全局浏览远程目录创建会话，原页面不切换，工作区入�
   if (info.project.name === "phone") await page.getByRole("combobox", { name: "设备与工作区", exact: true }).selectOption({ label: "/fixture/设备 A/新项目" });
   else {
     await page.locator("#device-nav").getByRole("button", { name: "开发台式机", exact: true }).click();
-    await page.locator(".workspace-card").filter({ hasText: "/fixture/设备 A/新项目" }).click();
+    await page.getByRole("button", { name: "进入工作区 /fixture/设备 A/新项目", exact: true }).click();
   }
   await page.getByRole("button", { name: "新建会话", exact: true }).click();
   await expect(dialog.getByRole("textbox", { name: "工作目录", exact: true })).toHaveValue("/fixture/设备 A/新项目");

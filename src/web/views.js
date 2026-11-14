@@ -3,11 +3,40 @@ import { workspaceName } from "./navigation.js";
 import { backendLabel } from "./backend.js";
 
 const active = (session) => ["running", "waiting", "loading"].includes(session.state);
+const hasActivity = (workspace) => Boolean(workspace.running || workspace.waiting || workspace.pending);
+function workspaceSummaries(data, id) {
+  const items = new Map(data.workspaces.filter((item) => item.deviceId === id).map((item) => [item.path,
+    { path: item.path, running: 0, waiting: 0, pending: 0, modified: null }]));
+  const sessions = new Map();
+  for (const session of data.sessions) {
+    if (session.deviceId !== id || session.state === "history") continue;
+    const item = items.get(session.cwd); if (!item) continue;
+    if (["running", "loading"].includes(session.state)) item.running++;
+    if (session.state === "waiting") item.waiting++;
+    const modified = Date.parse(session.modified);
+    if (Number.isFinite(modified) && (item.modified === null || modified > item.modified)) item.modified = modified;
+    if ("id" in session.target) sessions.set(session.target.id, item);
+  }
+  for (const interaction of data.interactions) {
+    if (interaction.deviceId !== id) continue;
+    const item = sessions.get(interaction.sessionId); if (item) item.pending++;
+  }
+  return [...items.values()].sort((a, b) => Number(hasActivity(b)) - Number(hasActivity(a)) ||
+    Number(Boolean(b.pending || b.waiting)) - Number(Boolean(a.pending || a.waiting)) ||
+    Number(b.modified !== null) - Number(a.modified !== null) || (b.modified ?? 0) - (a.modified ?? 0) || a.path.localeCompare(b.path));
+}
 export class WorkspaceViews {
-  constructor(history, select) { this.history = history; this.select = select; this.search = null; }
+  constructor(history, select, creator) {
+    this.history = history; this.select = select; this.creator = creator; this.search = null;
+    this.workspaceFilters = new Map(); this.workspaceData = null; this.workspaceDevice = null;
+    for (const filter of ["all", "active"]) document.getElementById(`workspaces-${filter}`).addEventListener("click", () => {
+      if (!this.workspaceData || !this.workspaceDevice) return;
+      this.workspaceFilters.set(this.workspaceDevice, filter); this.workspaces(this.workspaceData, this.workspaceDevice);
+    });
+  }
   clear() {
-    this.search = null;
-    for (const id of ["overview-devices", "active-sessions", "recent-sessions", "workspaces", "device-sessions", "sessions", "history-results"]) {
+    this.search = null; this.workspaceFilters.clear(); this.workspaceData = null; this.workspaceDevice = null;
+    for (const id of ["overview-devices", "active-sessions", "recent-sessions", "workspaces", "sessions", "history-results"]) {
       const node = document.getElementById(id); node.replaceChildren(); delete node.dataset.signature;
     }
   }
@@ -19,10 +48,7 @@ export class WorkspaceViews {
       const recent = data.sessions.filter((item) => item.state === "idle").sort((a, b) => b.modified.localeCompare(a.modified)).slice(0, 5);
       renderSessionList(document.getElementById("recent-sessions"), recent, devices, "暂无最近活动的会话。");
     }
-    if (view === "device" && scope) {
-      this.workspaces(data, scope.deviceId);
-      renderSessionList(document.getElementById("device-sessions"), data.sessions.filter((item) => item.deviceId === scope.deviceId && active(item)), devices, "这台设备没有正在进行的会话。");
-    }
+    if (view === "device" && scope) this.workspaces(data, scope.deviceId);
     if (view === "workspace" && scope) {
       const sessions = this.history.sessions(data, scope.deviceId, scope.cwd);
       const query = needle.trim().toLocaleLowerCase();
@@ -57,18 +83,48 @@ export class WorkspaceViews {
     }
   }
   workspaces(data, id) {
-    const root = document.getElementById("workspaces");
-    const items = data.workspaces.filter((item) => item.deviceId === id).sort((a, b) => a.path.localeCompare(b.path));
-    const signature = JSON.stringify([items, data.sessions.filter((item) => item.deviceId === id)]);
+    this.workspaceData = data; this.workspaceDevice = id;
+    const root = document.getElementById("workspaces"); const filter = this.workspaceFilters.get(id) ?? "all";
+    const items = workspaceSummaries(data, id); const device = data.devices.find((item) => item.id === id);
+    const canCreate = this.creator.canCreate(device);
+    const signature = JSON.stringify([id, filter, canCreate, items]);
     if (root.dataset.signature === signature) return;
+    const focus = document.activeElement?.dataset.workspaceKey;
     root.dataset.signature = signature; root.replaceChildren();
-    if (!items.length) root.append(create("p", "management-empty muted", "暂无可浏览的工作区。"));
-    for (const workspace of items) {
-      const button = create("button", "workspace-card"); button.type = "button";
-      const count = data.sessions.filter((item) => item.deviceId === id && item.cwd === workspace.path && active(item)).length;
-      button.append(create("strong", "", workspaceName(workspace.path)), create("span", "workspace-path muted", workspace.path), create("span", "muted", `${count} 个正在进行`));
-      button.addEventListener("click", () => this.select({ deviceId: id, cwd: workspace.path })); root.append(button);
+    for (const name of ["all", "active"]) document.getElementById(`workspaces-${name}`).setAttribute("aria-pressed", String(filter === name));
+    document.getElementById("workspaces-count").textContent = `${items.length} 个工作区 · ${items.filter(hasActivity).length} 个有活动`;
+    const visible = filter === "active" ? items.filter(hasActivity) : items;
+    if (!visible.length) root.append(create("li", "management-empty muted", !items.length ? "暂无可浏览的工作区。" : "没有正在进行或待处理的工作区，可切换到“全部”浏览。"));
+    for (const [index, workspace] of visible.entries()) root.append(this.workspaceRow(workspace, id, canCreate, index));
+    if (focus) {
+      const button = [...root.querySelectorAll("button")].find((item) => item.dataset.workspaceKey === focus);
+      const target = button?.disabled ? button.closest(".workspace-row").querySelector(".workspace-open") : button;
+      (target ?? document.getElementById(`workspaces-${filter}`)).focus({ preventScroll: true });
     }
+  }
+  workspaceRow(workspace, id, canCreate, index) {
+    const row = create("li", "workspace-row"); const scope = { deviceId: id, cwd: workspace.path };
+    const button = create("button", "workspace-open"); button.type = "button";
+    button.setAttribute("aria-label", `进入工作区 ${workspace.path}`); button.dataset.workspaceKey = JSON.stringify([id, workspace.path, "open"]);
+    const identity = create("span", "workspace-identity"); const path = create("span", "workspace-path muted", workspace.path); path.title = workspace.path; path.id = `workspace-path-${index}`;
+    const name = create("strong", "", workspaceName(workspace.path)); name.title = name.textContent;
+    identity.append(name, path);
+    const status = create("span", "workspace-activity"); status.id = `workspace-status-${index}`;
+    if (workspace.running) status.append(create("span", "workspace-badge running", `${workspace.running} 个进行中`));
+    if (workspace.pending) status.append(create("span", "workspace-badge waiting", `${workspace.pending} 个待处理`));
+    else if (workspace.waiting) status.append(create("span", "workspace-badge waiting", `${workspace.waiting} 个等待交互`));
+    if (!hasActivity(workspace)) status.append(create("span", "muted", "暂无活动"));
+    const updated = create("span", "workspace-updated muted"); updated.id = `workspace-updated-${index}`;
+    if (workspace.modified !== null) {
+      const date = new Date(workspace.modified); const time = create("time", "", date.toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+      time.dateTime = date.toISOString(); time.title = date.toLocaleString("zh-CN"); updated.append(create("span", "", "最近活动"), time);
+    } else updated.textContent = "尚无活动记录";
+    button.setAttribute("aria-describedby", `${status.id} ${updated.id}`);
+    button.append(identity, status, updated); button.addEventListener("click", () => this.select(scope));
+    const add = create("button", "workspace-create text-button", "+"); add.type = "button"; add.disabled = !canCreate;
+    add.setAttribute("aria-label", "新建会话"); add.setAttribute("aria-describedby", path.id); add.title = canCreate ? `在 ${workspace.path} 新建会话` : "设备未就绪或会话正在创建";
+    add.dataset.workspaceKey = JSON.stringify([id, workspace.path, "create"]); add.addEventListener("click", () => this.creator.open(scope));
+    row.append(button, add); return row;
   }
   searchOptions(data) {
     const root = document.getElementById("history-device");

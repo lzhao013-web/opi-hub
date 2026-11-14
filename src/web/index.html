@@ -32,10 +32,16 @@
       <nav id="device-nav" aria-label="设备"></nav>
       <div class="sidebar-footer"><span id="center-dot" class="status-dot online"></span><span id="center-status">中心已连接</span><button id="logout" class="text-button" type="button">退出</button></div>
     </aside>
+    <aside id="workspace-panel" class="workspace-panel" aria-label="工作区导航" hidden>
+      <div class="workspace-panel-heading"><h2>工作区 <span id="workspace-tree-count" class="muted">0</span></h2><span id="workspace-tree-device" class="muted"></span></div>
+      <label class="workspace-tree-search" for="workspace-tree-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m16 16 4 4"></path></svg><input id="workspace-tree-search" type="search" aria-label="筛选工作区" placeholder="搜索工作区路径…" autocomplete="off"></label>
+      <nav id="workspace-tree" class="workspace-tree" aria-label="工作区路径"></nav>
+      <p class="workspace-panel-footer">按设备上报的路径分组 · 历史按需读取</p>
+    </aside>
     <main class="canvas">
       <header class="toolbar"><span>工作空间 <span class="muted">/</span> <span id="breadcrumb">概览</span></span><button id="theme" class="text-button" type="button" aria-label="切换主题">跟随系统</button></header>
       <section class="content">
-        <div class="page-heading"><div><p class="eyebrow">OPI HUB</p><h1 id="heading">概览</h1><p id="page-description" class="muted">关注正在进行的工作，不展开全部历史。</p></div><div class="page-actions"><button id="new-session" class="primary" type="button" disabled>新建会话</button><button id="add-schedule" class="primary" type="button" hidden>新建计划</button><button id="add-device" class="secondary" type="button"><span aria-hidden="true">+</span> 添加设备</button></div></div>
+        <div class="page-heading"><div><p class="eyebrow">OPI HUB</p><h1 id="heading">概览</h1><p id="page-description" class="muted">关注正在进行的工作，不展开全部历史。</p></div><div class="page-actions"><button id="new-session" class="primary" type="button" disabled>新建会话</button><button id="schedule-workspace" class="secondary" type="button" hidden>预约任务</button><button id="add-schedule" class="primary" type="button" hidden>新建计划</button><button id="add-device" class="secondary" type="button"><span aria-hidden="true">+</span> 添加设备</button></div></div>
         <div class="summary"><span><span id="online-count" class="status-dot online"></span><span id="summary-text">正在连接…</span></span><span class="muted">任务在设备本机运行</span></div>
         <p id="workspace-error" class="notice" role="alert" hidden></p>
         <button id="schedule-alert" class="notice schedule-alert" type="button" hidden></button>
@@ -50,11 +56,13 @@
           <h2 class="section-title">最近活动</h2><p class="section-caption muted">最多展示 5 个最近活动的空闲会话。</p><div id="recent-sessions" class="session-list"></div>
         </section>
         <section id="device-view" aria-label="设备工作区" hidden>
-          <h2 class="section-title">工作区</h2><div id="workspaces" class="workspace-cards"></div>
-          <h2 class="section-title">正在进行</h2><div id="device-sessions" class="session-list"></div>
+          <div class="workspace-list-heading"><div><h2 class="section-title">工作区</h2><span id="workspaces-count" class="muted"></span></div><div class="workspace-filters" role="group" aria-label="工作区筛选"><button id="workspaces-all" type="button" aria-pressed="true">全部</button><button id="workspaces-active" type="button" aria-pressed="false">有活动</button></div></div>
+          <p class="section-caption muted">有活动的工作区优先，待处理交互置顶。最近活动仅取自当前已知会话，不自动读取历史。</p>
+          <ul id="workspaces" class="workspace-list" aria-label="设备工作区列表"></ul>
         </section>
         <section id="workspace-view" aria-label="工作区会话" hidden>
-          <div class="workspace-controls"><div class="session-controls"><label for="session-search">筛选当前工作区</label><input id="session-search" type="search" placeholder="会话标题" autocomplete="off"></div><button id="load-history" class="secondary" type="button">加载历史会话</button><button id="schedule-workspace" class="secondary" type="button">预约任务</button></div>
+          <h2 class="section-title">会话与历史</h2>
+          <div class="workspace-controls"><div class="session-controls"><label for="session-search">筛选当前工作区</label><input id="session-search" type="search" placeholder="会话标题" autocomplete="off"></div><button id="load-history" class="secondary" type="button">加载历史会话</button></div>
           <p id="history-status" class="section-caption muted" role="status"></p><div id="sessions" class="session-list"></div>
         </section>
         <section id="history-view" aria-label="历史查询" hidden>

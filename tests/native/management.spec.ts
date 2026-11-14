@@ -45,7 +45,7 @@ test("真实会话直达和后台审批订阅不切换原页面，中心回答�
   await native.getByRole("textbox", { name: "执行命令", exact: true }).press("ControlOrMeta+Enter"); await shell;
   await page.bringToFront();
   await page.locator("#device-nav").getByRole("button", { name: "原生 o-pi", exact: true }).click();
-  await page.locator(".workspace-card").filter({ has: page.getByText("workspace", { exact: true }) }).click();
+  await page.locator(".workspace-row").filter({ has: page.getByText("workspace", { exact: true }) }).getByRole("button", { name: /^进入工作区 / }).click();
   const row = page.locator(".session-row").filter({ has: page.getByRole("heading", { name: "集中审批测试", exact: true }) });
   await expect(row).toBeVisible();
   await page.getByRole("button", { name: "加载历史会话", exact: true }).click();
