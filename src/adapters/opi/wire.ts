@@ -1,4 +1,5 @@
 import { object } from "../../shared/protocol.ts";
+import { isModelOption, type ModelOption } from "../../shared/models.ts";
 import { isInteraction, type Interaction } from "../../shared/management.ts";
 
 export interface History { path: string; cwd: string; title: string; modified: string }
@@ -60,6 +61,14 @@ export function decodeEvent(value: unknown): OpiEvent | undefined {
     default: return undefined;
   }
   throw new Error(`o-pi ${value.type} 事件格式不匹配`);
+}
+/** 从现有会话订阅提取模型元数据，不保留快照中的正文或提供商配置。 */
+export function decodeModels(raw: unknown): ModelOption[] | undefined {
+  if (!object(raw) || raw.type !== "snapshot" && raw.type !== "patch") return undefined;
+  if (raw.type === "snapshot" && raw.value === null) return [];
+  if (raw.type === "patch" && object(raw.value) && raw.value.models === undefined) return undefined;
+  if (!object(raw.value) || !Array.isArray(raw.value.models) || !raw.value.models.every(isModelOption)) throw new Error("o-pi 模型列表格式不匹配");
+  return raw.value.models.map(({ provider, id, name }) => ({ provider, id, name }));
 }
 export function applyDirectory<T>(before: T[] | undefined, parts: DirectoryPatch<T>): T[] {
   if (!before) throw new Error("o-pi 目录增量缺少初始状态");

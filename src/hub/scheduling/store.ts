@@ -48,7 +48,7 @@ export class ScheduleStore {
   private saveRun(run: ScheduleRun): void { this.db.prepare("UPDATE runs SET state=?,payload=? WHERE id=?").run(run.state, JSON.stringify(run), run.id); }
   add(definition: PlanDefinition, now: number): Plan {
     const nextAt = nextOccurrence(definition.rule, now); if (!nextAt) throw new Error("计划没有未来可执行的时刻");
-    const plan: Plan = { name: definition.name, deviceId: definition.deviceId, path: definition.path, prompt: definition.prompt, timeoutSeconds: definition.timeoutSeconds, rule: structuredClone(definition.rule), id: randomUUID(), enabled: true, archived: false, nextAt, createdAt: new Date(now).toISOString() };
+    const plan: Plan = { name: definition.name, deviceId: definition.deviceId, path: definition.path, prompt: definition.prompt, timeoutSeconds: definition.timeoutSeconds, rule: structuredClone(definition.rule), ...(definition.model ? { model: { provider: definition.model.provider, id: definition.model.id } } : {}), id: randomUUID(), enabled: true, archived: false, nextAt, createdAt: new Date(now).toISOString() };
     this.transaction(() => this.savePlan(plan)); return plan;
   }
   enabled(id: string, enabled: boolean, now: number): void {
@@ -79,8 +79,8 @@ export class ScheduleStore {
       const blocked = this.db.prepare(`SELECT id FROM runs WHERE (plan_id=? OR device_id=?) AND state IN (${blockers}) LIMIT 1`).get(plan.id, plan.deviceId);
       if (trigger === "manual" && (blocked || unavailable)) throw new Error(blocked ? "此计划或设备仍有运行未结束或未确认" : unavailable ?? "设备未就绪");
       const state = missed ? "missed" : blocked ? "skipped" : unavailable ? "missed" : "dispatching";
-      const run: ScheduleRun = { id: runId, planId: plan.id, name: plan.name, deviceId: plan.deviceId, path: plan.path, scheduledAt: due, trigger, state,
-        session: null, file: null, message: missed ?? (blocked ? "上次运行未结束或结果未确认，未重复启动" : unavailable ?? ""), nodeRevision: -1, updatedAt: new Date(now).toISOString() };
+      const run: ScheduleRun = { id: runId, planId: plan.id, name: plan.name, deviceId: plan.deviceId, path: plan.path, ...(plan.model ? { model: { ...plan.model } } : {}), scheduledAt: due, trigger, state,
+        session: null, file: null, replyId: null, message: missed ?? (blocked ? "上次运行未结束或结果未确认，未重复启动" : unavailable ?? ""), nodeRevision: -1, updatedAt: new Date(now).toISOString() };
       this.db.prepare("INSERT INTO runs(id,trigger_key,plan_id,device_id,scheduled_at,state,payload) VALUES(?,?,?,?,?,?,?)").run(run.id, key, plan.id, plan.deviceId, due, run.state, JSON.stringify(run));
       return run;
     });
@@ -91,7 +91,7 @@ export class ScheduleStore {
   apply(id: string, record: TaskRecord, now: number): void {
     this.transaction(() => {
       const run = this.run(id); if (!run || !blockingTask(run.state) || record.revision < run.nodeRevision || record.revision === run.nodeRevision && run.state !== "unknown") return;
-      this.saveRun({ ...run, state: record.state, session: record.session, file: record.file, message: record.message, nodeRevision: record.revision, updatedAt: new Date(now).toISOString() });
+      this.saveRun({ ...run, state: record.state, session: record.session, file: record.file, replyId: record.replyId, message: record.message, nodeRevision: record.revision, updatedAt: new Date(now).toISOString() });
     });
   }
   recover(now: number): void {

@@ -1,15 +1,18 @@
 import { setTimeout as delay } from "node:timers/promises";
+import type { ModelOption } from "../../shared/models.ts";
 import type { RawData, WebSocket } from "ws";
 import { parse } from "../../shared/protocol.ts";
 import { buffer } from "../../shared/sockets.ts";
 import type { Interaction, ManagedSession, ManagementState } from "../../shared/management.ts";
+import type { CompletionNotice } from "../../shared/notifications.ts";
+import { CompletionObserver } from "./completion.ts";
 import { OpiClient } from "./client.ts";
 import { readHistory } from "./history.ts";
 import { listDirectories } from "./directories.ts";
 import { SessionCreation } from "./creation.ts";
 import { AgentTask } from "./task.ts";
 import { blockingTask, executingTask, type TaskInput } from "../../shared/tasks.ts";
-import { applyDirectory, decodeDialog, decodeEvent, decodeFrame, type Activity, type OpiEvent, type Selected, type Workspace } from "./wire.ts";
+import { applyDirectory, decodeDialog, decodeEvent, decodeFrame, decodeModels, type Activity, type OpiEvent, type Selected, type Workspace } from "./wire.ts";
 
 /** 每个订阅有独立客户端身份，不借用浏览器的导航或审批连接。 */
 class Subscription {
@@ -23,15 +26,19 @@ class Subscription {
   error: string | undefined;
   selected: Selected | null = null;
   dialogs: Interaction[] = [];
+  models: ModelOption[] = [];
   private responses = 0;
-  get busy(): boolean { return this.responses > 0; }
-  constructor(target: URL, changed: (event?: OpiEvent) => void, sessionId?: string) {
-    this.target = target; this.changed = changed; this.sessionId = sessionId;
+  private executing = false;
+  private completed: (sessionId: string, replyId: string) => void;
+  get busy(): boolean { return this.responses > 0 || this.executing; }
+  constructor(target: URL, changed: (event?: OpiEvent) => void, completed: (sessionId: string, replyId: string) => void, sessionId?: string) {
+    this.target = target; this.changed = changed; this.completed = completed; this.sessionId = sessionId;
     this.task = this.run();
   }
   private async run(): Promise<void> {
     let failures = 0;
     while (!this.controller.signal.aborted) {
+      const observer = new CompletionObserver(this.completed);
       const client = new OpiClient(this.target, (event) => {
         if (event.type === "selected") {
           if (this.sessionId && event.session?.id !== this.sessionId) throw new Error("目标会话已不存在");
@@ -43,14 +50,20 @@ class Subscription {
           this.dialogs = selected ? event.value.map((raw) => decodeDialog(raw, selected.id)) : [];
         }
         this.changed(event);
-      }, this.sessionId);
+      }, this.sessionId, (raw) => {
+        observer.consume(raw); this.executing = observer.busy;
+        if (!this.sessionId) {
+          const models = decodeModels(raw);
+          if (models) { this.models = models; if (this.connected) this.changed(); }
+        }
+      });
       this.client = client;
       try {
         await client.ready;
         failures = 0; this.connected = true; this.error = undefined; this.changed();
         throw await client.closed;
       } catch (error) {
-        this.connected = false; this.selected = null; this.dialogs = [];
+        this.connected = false; this.selected = null; this.dialogs = []; this.models = []; this.executing = false;
         if (!this.controller.signal.aborted) { this.error = error instanceof Error ? error.message : String(error); this.changed(); }
       } finally { client.close(); this.client = undefined; }
       if (this.controller.signal.aborted) break;
@@ -80,6 +93,7 @@ export class OpiManagement {
   private creations = new Map<string, SessionCreation>();
   private tasks = new Map<string, AgentTask>();
   private feedback = new Set<string>();
+  private notifications = new Map<string, CompletionNotice>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private stopped = false;
   constructor(target: URL, emit: (state: ManagementState) => void) {
@@ -97,19 +111,21 @@ export class OpiManagement {
       if (event?.type === "feedback" && event.tone === "error") this.feedback.add(event.message);
       if (!event && !this.catalog.connected) { this.workspaces = undefined; this.activity = []; this.feedback.clear(); }
       this.schedule();
-    });
+    }, (id, replyId) => this.completed(id, replyId));
     this.schedule();
   }
   /** 只读观察经 hub 转发的客户端导航，补充尚未进入全局目录的新建会话。 */
   trackViewer(socket: WebSocket): void {
     if (this.stopped) return;
     const key = Symbol();
+    const observer = new CompletionObserver((id, replyId) => this.completed(id, replyId));
     const receive = (raw: RawData, binary: boolean) => {
       try {
         if (binary) throw new Error("会话发现收到了非 JSON 事件");
         const frame = decodeFrame(parse(buffer(raw).toString()));
         if (!frame) return;
         for (const raw of frame.events) {
+          observer.consume(raw);
           const event = decodeEvent(raw);
           if (event?.type !== "selected") continue;
           if (event.session) this.viewers.set(key, event.session); else this.viewers.delete(key);
@@ -125,6 +141,19 @@ export class OpiManagement {
     };
     socket.on("message", receive); socket.once("close", cleanup); this.viewerCleanup.add(cleanup);
   }
+  private remember(notice: CompletionNotice): void {
+    if (this.notifications.has(notice.id)) return;
+    this.notifications.set(notice.id, notice);
+    for (const id of [...this.notifications.keys()].slice(0, Math.max(0, this.notifications.size - 100))) this.notifications.delete(id);
+    this.schedule();
+  }
+  private completed(sessionId: string, replyId: string): void {
+    if (this.stopped || [...this.tasks.values()].some((task) => task.record.session?.id === sessionId && (executingTask(task.record.state) || task.record.replyId === replyId))) return;
+    const session = this.activity.find((item) => item.sessionId === sessionId);
+    const selected = [...this.viewers.values(), ...[this.catalog, ...this.watches.values()].flatMap((watch) => watch.selected ? [watch.selected] : [])].find((item) => item.id === sessionId);
+    if (session) this.remember({ id: `${sessionId}:${replyId}`, sessionId, file: session.path, title: session.title, cwd: session.cwd, completedAt: new Date().toISOString(), runId: null });
+    else if (selected) this.remember({ id: `${sessionId}:${replyId}`, sessionId, file: selected.path, title: "", cwd: selected.cwd, completedAt: new Date().toISOString(), runId: null });
+  }
   private schedule(): void {
     if (this.stopped || this.timer) return;
     this.timer = setTimeout(() => { this.timer = undefined; this.publish(); }, 30);
@@ -133,7 +162,7 @@ export class OpiManagement {
     if (this.stopped) return;
     const desired = new Set<string>();
     if (this.catalog.connected) {
-      for (const session of this.activity) if (session.state === "waiting") desired.add(session.sessionId);
+      for (const session of this.activity) if (session.state === "waiting" || session.state === "running") desired.add(session.sessionId);
       for (const session of this.viewers.values()) desired.add(session.id);
       for (const creation of this.creations.values()) {
         const record = creation.record;
@@ -143,10 +172,14 @@ export class OpiManagement {
       if (this.catalog.selected) desired.delete(this.catalog.selected.id);
     }
     for (const [id, watch] of this.watches) if (!desired.has(id) && !watch.busy) { this.watches.delete(id); void watch.close(); }
-    for (const id of desired) if (!this.watches.has(id)) this.watches.set(id, new Subscription(this.target, () => this.schedule(), id));
+    for (const id of desired) if (!this.watches.has(id)) this.watches.set(id, new Subscription(this.target, () => this.schedule(), (sessionId, replyId) => this.completed(sessionId, replyId), id));
     if (!this.catalog.connected) {
       this.emit(this.catalog.error ? { state: "error", message: this.catalog.error } : { state: "connecting" });
       return;
+    }
+    for (const task of this.tasks.values()) {
+      const record = task.record;
+      if (record.state === "completed" && record.session) this.remember({ id: `task:${record.id}`, sessionId: record.session.id, file: record.file, title: record.name, cwd: record.path, completedAt: record.updatedAt, runId: record.id });
     }
     const subscriptions = [this.catalog, ...this.watches.values()];
     const terminal = [...this.tasks.values()].filter((task) => !blockingTask(task.record.state)).sort((a, b) => b.record.updatedAt.localeCompare(a.record.updatedAt));
@@ -180,7 +213,7 @@ export class OpiManagement {
     const sessions: ManagedSession[] = active.map((item) => ({ target: { id: item.sessionId }, file: item.path, cwd: item.cwd, title: item.title, modified: item.modified, state: item.state }));
     const workspaces = [...new Set([...(this.workspaces ?? []).map((item) => item.path), ...active.map((item) => item.cwd), ...[...this.viewers.values()].map((item) => item.cwd)])];
     const issues = [...this.feedback, ...[...this.watches].flatMap(([id, watch]) => watch.error ? [`${id}: ${watch.error}`] : [])];
-    this.emit({ state: "ready", workspaces, sessions, interactions, creations: [...this.creations.values()].map((creation) => creation.record), tasks: [...this.tasks.values()].map((task) => task.record), issues });
+    this.emit({ state: "ready", models: this.catalog.models, workspaces, sessions, interactions, creations: [...this.creations.values()].map((creation) => creation.record), tasks: [...this.tasks.values()].map((task) => task.record), notifications: [...this.notifications.values()], issues });
   }
   history(signal: AbortSignal) { return readHistory(this.target, signal); }
   directories(path: string, signal: AbortSignal) { return listDirectories(this.target, path, signal); }
@@ -195,7 +228,7 @@ export class OpiManagement {
   }
   startTask(input: TaskInput): void {
     const existing = this.tasks.get(input.id);
-    if (existing) { if (existing.input.name !== input.name || existing.input.path !== input.path || existing.input.prompt !== input.prompt || existing.input.timeoutSeconds !== input.timeoutSeconds) throw new Error("运行标识不能用于不同任务"); return; }
+    if (existing) { if (existing.input.name !== input.name || existing.input.path !== input.path || existing.input.prompt !== input.prompt || existing.input.timeoutSeconds !== input.timeoutSeconds || existing.input.model?.provider !== input.model?.provider || existing.input.model?.id !== input.model?.id) throw new Error("运行标识不能用于不同任务"); return; }
     if ([...this.tasks.values()].some((task) => blockingTask(task.record.state)) || [...this.creations.values()].some((creation) => creation.record.state === "creating")) throw new Error("此设备仍有计划运行或会话创建未结束");
     this.tasks.set(input.id, new AgentTask(this.target, input, () => this.schedule())); this.schedule();
   }

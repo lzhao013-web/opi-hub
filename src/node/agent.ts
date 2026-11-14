@@ -118,7 +118,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
             void (async () => {
               await connected(tunnel); const target = runtime.target;
               if (request.kind === "http") { await serveHttp(tunnel, target, request); await json(tunnel, { type: "ready" }); }
-              else await serveWebSocket(tunnel, target, request, request.path.split("?")[0] === "/api/events" ? (socket) => runtime.observe(socket) : undefined);
+              else await serveWebSocket(tunnel, target, request, request.path.split("?")[0] === "/api/events" && new URL(request.path, target).searchParams.get("hub-preview") !== "1" ? (socket) => runtime.observe(socket) : undefined);
             })().catch((error: unknown) => { log(error instanceof Error ? error.message : "转发失败"); tunnel.terminate(); });
           } catch { control.close(1008, "Invalid control frame"); }
         });

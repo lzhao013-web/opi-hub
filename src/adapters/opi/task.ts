@@ -15,13 +15,14 @@ export class AgentTask {
   constructor(target: URL, input: TaskInput, changed: () => void) {
     this.target = target; this.input = input; this.changed = changed; this.currentPath = input.path;
     const at = new Date().toISOString();
-    this.record = { id: input.id, name: input.name, path: input.path, state: "creating", session: null, file: null, startedAt: at, updatedAt: at, revision: 0, message: "" };
+    this.record = { id: input.id, name: input.name, path: input.path, state: "creating", session: null, file: null, startedAt: at, updatedAt: at, revision: 0, message: "", replyId: null };
     this.port = new SessionPort(target, () => { if (!this.ending) this.update(this.port.dialogs.length ? "waiting" : this.mode); }, true);
     this.task = this.run();
   }
   private update(state: TaskState, message = this.record.message): void {
     const session = this.port.owned; const file = this.port.file;
-    const next = { ...this.record, state, session, file, message, path: session?.cwd ?? this.currentPath };
+    const replyId = state === "completed" ? this.port.execution.resultEntryId : this.record.replyId;
+    const next = { ...this.record, state, session, file, message, replyId, path: session?.cwd ?? this.currentPath };
     if (JSON.stringify(next) === JSON.stringify(this.record)) return;
     this.record = { ...next, revision: this.record.revision + 1, updatedAt: new Date().toISOString() }; this.changed();
   }
@@ -32,6 +33,7 @@ export class AgentTask {
       if (this.port.execution.sessionId !== session.id) throw new Error("缺少专用会话的执行状态，未发送任务");
       if (this.port.execution.busy || this.port.execution.users > 0) throw new Error("专用会话已被其他输入占用，未自动发送任务");
       await this.port.client.action({ action: "rename", name: `[schedule] ${this.input.name}` }, session.id, this.controller.signal);
+      if (this.input.model) await this.port.client.action({ action: "model", provider: this.input.model.provider, id: this.input.model.id }, session.id, this.controller.signal);
       this.mode = "running"; this.update("running"); this.sent = true;
       await this.port.client.action({ action: "prompt", text: this.input.prompt, images: [], behavior: "followUp" }, session.id, this.controller.signal);
       await this.port.client.synchronize(this.controller.signal); await this.port.waitIdle(this.controller.signal);

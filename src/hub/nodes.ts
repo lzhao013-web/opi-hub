@@ -21,7 +21,8 @@ export class Nodes {
   private answering = new Set<string>();
   private sessionRequests = new SessionRequests();
   private timer = setInterval(() => this.heartbeat(), 15_000);
-  constructor() { this.timer.unref(); }
+  private onManagement: (deviceId: string, state: ManagementState) => void;
+  constructor(onManagement: (deviceId: string, state: ManagementState) => void) { this.onManagement = onManagement; this.timer.unref(); }
   status(id: string): { connected: false } | { connected: true; connectionId: string; report?: NodeReport } {
     const node = this.connections.get(id);
     return node ? { connected: true, connectionId: this.identity(node), report: node.report } : { connected: false };
@@ -115,7 +116,7 @@ export class Nodes {
           }
           node.report = value;
         }
-        else if (isManagementMessage(value)) node.management = value.value;
+        else if (isManagementMessage(value)) { node.management = value.value; this.onManagement(id, value.value); }
         else if (isSessionResponse(value) || isBackendReply(value) || isTaskReply(value)) this.sessionRequests.receive(node.socket, value);
         else if (isHistoryReply(value)) {
           const pending = this.histories.get(value.id);

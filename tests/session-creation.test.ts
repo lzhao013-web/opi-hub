@@ -2,7 +2,7 @@ import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
-import { fixture, login } from "./helpers.ts";
+import { fixture, login, waitDevices } from "./helpers.ts";
 import { startHub } from "../src/hub/server.ts";
 import { fileURLToPath } from "node:url";
 import { connected } from "../src/shared/sockets.ts";
@@ -104,7 +104,7 @@ describe("远程新建会话", () => {
     assert.ok(object(dialog) && typeof dialog.sessionId === "string" && typeof dialog.id === "string");
     const before = env.fakeA.newCalls(); const port = Number(new URL(env.hub.url).port);
     await env.hub.close(); env.hub = await startHub({ host: "127.0.0.1", port, data: env.directory, assets: fileURLToPath(new URL("../src/web/", import.meta.url)) });
-    env.cookie = await login(env.hub.url);
+    env.cookie = await login(env.hub.url); await waitDevices(env.hub.url, env.cookie, 2);
     await until(overview, (value) => value.interactions.some((item) => object(item) && item.id === dialog.id));
     assert.equal((await start(env.a.id, "/fixture/设备 A/trust", id)).status, 202); assert.equal(env.fakeA.newCalls(), before);
     assert.equal((await start(env.a.id, "/fixture/设备 A/other")).status, 409);

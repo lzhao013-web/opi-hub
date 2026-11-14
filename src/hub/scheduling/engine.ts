@@ -17,6 +17,7 @@ export class Scheduler {
       .sort((a, b) => Number(b.state === "unknown" || executingTask(b.state) || b.state === "dispatching") - Number(a.state === "unknown" || executingTask(a.state) || a.state === "dispatching") || b.scheduledAt.localeCompare(a.scheduledAt));
     return { plans: this.store.plans(), runs, error: this.error };
   }
+  resultRun(id: string): ScheduleRun | undefined { return this.store.run(id); }
   summary() { const runs = this.store.unresolved(); return { active: runs.filter((run) => run.state !== "unknown").length, unknown: runs.filter((run) => run.state === "unknown").length, error: this.error }; }
   add(input: PlanDefinition) { if (!this.hasDevice(input.deviceId)) throw new Error("设备不存在"); return this.store.add(input, this.now()); }
   enable(id: string, value: boolean): void { const plan = this.store.plan(id); if (value && (!plan || !this.hasDevice(plan.deviceId))) throw new Error("设备不存在"); this.store.enabled(id, value, this.now()); }
@@ -49,7 +50,7 @@ export class Scheduler {
   private async dispatch(run: ScheduleRun): Promise<void> {
     try {
       const plan = this.store.plan(run.planId); if (!plan) throw new Error("运行对应的计划缺失");
-      await this.nodes.startTask(run.deviceId, { id: run.id, name: plan.name, path: plan.path, prompt: plan.prompt, timeoutSeconds: plan.timeoutSeconds }, AbortSignal.timeout(25_000));
+      await this.nodes.startTask(run.deviceId, { id: run.id, name: plan.name, path: plan.path, prompt: plan.prompt, timeoutSeconds: plan.timeoutSeconds, ...(plan.model ? { model: plan.model } : {}) }, AbortSignal.timeout(25_000));
     } catch (error) {
       if (!this.stopped) this.store.mark(run.id, error instanceof TaskRejectedError ? "failed" : "unknown", error instanceof Error ? error.message : String(error), this.now());
     }

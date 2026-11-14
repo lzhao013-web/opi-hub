@@ -1,11 +1,14 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
+import { DatabaseSync } from "node:sqlite";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture, login, waitDevices } from "./helpers.ts";
 import { startHub } from "../src/hub/server.ts";
 import { isPlan, isRun, type PlanDefinition } from "../src/shared/schedules.ts";
 import { object } from "../src/shared/protocol.ts";
+import type { ModelRef } from "../src/shared/models.ts";
 
 let env: Awaited<ReturnType<typeof fixture>>;
 before(async () => { env = await fixture(); });
@@ -21,8 +24,8 @@ async function until<T>(read: () => Promise<T> | T, accept: (value: T) => boolea
   const deadline = Date.now() + 10_000;
   while (true) { const value = await read(); if (accept(value)) return value; assert.ok(Date.now() < deadline, "等待计划运行状态超时"); await delay(20); }
 }
-async function plan(prompt: string, timeoutSeconds = 10) {
-  const input: PlanDefinition = { name: `计划 ${prompt}`, deviceId: env.a.id, path: "/fixture/设备 A/other", prompt, timeoutSeconds, rule: { kind: "once", local: new Date(Date.now() + 3600_000).toISOString().slice(0, 19), timeZone: "UTC" } };
+async function plan(prompt: string, timeoutSeconds = 10, model?: ModelRef) {
+  const input: PlanDefinition = { name: `计划 ${prompt}`, deviceId: env.a.id, path: "/fixture/设备 A/other", prompt, timeoutSeconds, ...(model ? { model } : {}), rule: { kind: "once", local: new Date(Date.now() + 3600_000).toISOString().slice(0, 19), timeZone: "UTC" } };
   const response = await post("/_hub/schedules", input); assert.equal(response.status, 201); const value: unknown = await response.json(); assert.ok(isPlan(value)); return value;
 }
 async function runNow(id: string) { const response = await post(`/_hub/schedules/${id}/run`); assert.equal(response.status, 202); const value: unknown = await response.json(); assert.ok(isRun(value)); return value; }
@@ -33,11 +36,47 @@ describe("计划任务真实节点协议", () => {
     const value = await until(snapshot, (value) => value.runs.some((item) => item.id === run.id && item.state === "completed"));
     assert.equal(env.fakeA.prompts.length, 1); assert.equal(env.fakeA.prompts[0]?.text, "生成测试报告"); assert.equal(env.fakeB.prompts.length, 0);
     const record = value.runs.find((item) => item.id === run.id); assert.ok(record?.session); assert.notEqual(record.session.id, "runtime-1"); assert.notEqual(record.session.id, "runtime-2");
-    assert.ok(!JSON.stringify(value).includes("不应同步到中心的助手正文"));
+    assert.equal(typeof record.replyId, "string"); assert.ok(!JSON.stringify(value).includes("不应同步到中心的助手正文"));
+    const db = new DatabaseSync(path.join(env.directory, "schedules.sqlite"), { readOnly: true });
+    try { const row = db.prepare("SELECT payload FROM runs WHERE id=?").get(run.id); assert.equal(typeof row?.payload, "string"); assert.ok(!String(row?.payload).includes("不应同步到中心的助手正文")); assert.ok(String(row?.payload).includes(String(record.replyId))); }
+    finally { db.close(); }
     env.fakeA.deleteSession(record.session.id);
     const read = async () => { const current: unknown = await (await fetch(env.hub.url + "/_hub/overview", { headers: headers() })).json(); return current; };
     await until(read, (current) => object(current) && Array.isArray(current.sessions) && current.sessions.every((item) => !object(item) || !object(item.target) || item.target.id !== record.session?.id));
     assert.equal((await snapshot()).runs.find((item) => item.id === run.id)?.state, "completed");
+  });
+  test("模型列表按设备上报，指定提供商与模型只应用于专用会话，不改变后续默认运行", async () => {
+    const current: unknown = await (await fetch(env.hub.url + "/_hub/overview", { headers: headers() })).json();
+    assert.ok(object(current) && Array.isArray(current.devices));
+    for (const [id, name] of [[env.a.id, "设备 A"], [env.b.id, "设备 B"]]) {
+      const device: unknown = current.devices.find((item) => object(item) && item.id === id);
+      assert.ok(object(device) && object(device.management) && Array.isArray(device.management.models));
+      assert.ok(device.management.models.some((item) => object(item) && item.provider === name && item.id === "fast"));
+    }
+    const model = { provider: "设备 A 备用", id: "fast" };
+    const entry = await plan("指定备用模型整理报告", 10, model); assert.deepEqual(entry.model, model);
+    const run = await runNow(entry.id);
+    const value = await until(snapshot, (value) => value.runs.some((item) => item.id === run.id && item.state === "completed"));
+    const record = value.runs.find((item) => item.id === run.id); assert.ok(record?.session);
+    assert.deepEqual(record.model, model);
+    assert.deepEqual(env.fakeA.prompts.find((item) => item.sessionId === record.session?.id)?.model, model);
+    assert.deepEqual(env.fakeA.modelChanges.at(-1), { sessionId: record.session.id, model });
+    assert.deepEqual(env.fakeA.model("runtime-1"), { provider: "设备 A", id: "default" });
+    const changes = env.fakeA.modelChanges.length;
+    const defaults = await plan("继续使用设备默认模型"); const next = await runNow(defaults.id);
+    await until(snapshot, (value) => value.runs.some((item) => item.id === next.id && item.state === "completed"));
+    assert.deepEqual(env.fakeA.prompts.find((item) => item.text === "继续使用设备默认模型")?.model, { provider: "设备 A", id: "default" });
+    assert.equal(env.fakeA.modelChanges.length, changes);
+  });
+  test("指定模型不可用时明确失败，不发送提示词或自动换模型", async () => {
+    const count = env.fakeA.prompts.length;
+    const entry = await plan("不可用模型不应执行", 10, { provider: "设备 A", id: "removed" }); const run = await runNow(entry.id);
+    const value = await until(snapshot, (value) => value.runs.some((item) => item.id === run.id && item.state === "failed"));
+    assert.match(value.runs.find((item) => item.id === run.id)?.message ?? "", /模型不可用/);
+    assert.equal(env.fakeA.prompts.length, count); assert.deepEqual(value.runs.find((item) => item.id === run.id)?.model, entry.model);
+    for (const model of [null, "fast", { provider: "设备 A" }, { provider: "设备 A", id: "" }]) {
+      assert.equal((await post("/_hub/schedules", { ...entry, id: undefined, enabled: undefined, archived: undefined, nextAt: undefined, createdAt: undefined, model })).status, 400);
+    }
   });
   test("不同设备可并行运行，同设备不重入，取消一台不影响另一台", async () => {
     const a = await plan("WAIT 并行设备 A", 30);

@@ -11,6 +11,7 @@ import { object } from "../src/shared/protocol.ts";
 import type { NodeConfig } from "../src/node/config.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { FakeExecution } from "./fake-execution.ts";
+import type { ModelOption } from "../src/shared/models.ts";
 
 export const PASSWORD = "test-password-1234";
 const html = `<!doctype html><html><head><meta charset="utf-8"><title>o-pi fixture</title></head><body><h1 id="name">连接中</h1><p id="selected-session"></p><p id="selected-cwd"></p><p id="result"></p><p id="socket"></p><img id="preview" alt="文件预览"><form><input id="prompt" aria-label="消息"><button>发送</button></form><button id="approve">允许</button><button id="create-dialog">创建审批</button><button id="create-input">创建输入</button><p id="approval"></p><script type="module" src="./app.js"></script></body></html>`;
@@ -93,7 +94,7 @@ export async function fakeOpi(name: string) {
   const execution = new FakeExecution((id) => activity.find((item) => item.sessionId === id), publish, (session) => {
     hiddenActivity.delete(session.sessionId);
     if (!history.some((item) => item.path === session.path)) history.push({ path: session.path, cwd: session.cwd, title: session.title, modified: session.modified });
-  });
+  }, name);
   const setDialogs = (sessionId: string, value: unknown[]) => {
     dialogs.set(sessionId, value);
     const current = activity.find((item) => item.sessionId === sessionId);
@@ -168,6 +169,11 @@ export async function fakeOpi(name: string) {
           } else if (action.action === "rename") {
             const session = activity.find((item) => item.sessionId === body.sessionId); if (!session) { res.writeHead(400).end("Unknown rename session"); return; }
             session.title = String(action.name); publish();
+          } else if (action.action === "model") {
+            const session = activity.find((item) => item.sessionId === body.sessionId);
+            const model = execution.models.find((item) => item.provider === action.provider && item.id === action.id);
+            if (!session || !model) { res.writeHead(400).end("指定模型不可用"); return; }
+            execution.setModel(session.sessionId, model);
           } else if (action.action === "prompt") {
             const id = String(body.sessionId); await execution.prompt(id, String(action.text), (dialogs) => setDialogs(id, dialogs), client.ws);
           } else if (action.action === "abort") {
@@ -232,7 +238,9 @@ export async function fakeOpi(name: string) {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No address");
   return {
-    url: `http://127.0.0.1:${address.port}`, leaked: () => leaked, setDialogs, answers, prompts: execution.prompts,
+    url: `http://127.0.0.1:${address.port}`, leaked: () => leaked, setDialogs, answers, prompts: execution.prompts, modelChanges: execution.modelChanges,
+    setModels(models: ModelOption[]) { execution.models = models; publish(); },
+    model: (id: string) => execution.model(id),
     selections: () => [...clients.values()].map((client) => client.session),
     deleteSession(id: string) {
       const index = activity.findIndex((item) => item.sessionId === id); if (index >= 0) activity.splice(index, 1);
@@ -262,7 +270,7 @@ export async function waitDevices(base: string, cookie: string, count: number): 
   while (true) {
     const value: unknown = await (await fetch(base + "/_hub/overview", { headers: { Cookie: cookie } })).json();
     if (object(value) && Array.isArray(value.devices) && value.devices.filter((item) => object(item) && object(item.report) && item.report.ready === true && object(item.management) && item.management.state === "ready").length === count) return;
-    if (Date.now() > deadline) throw new Error("托管后端未就绪");
+    if (Date.now() > deadline) throw new Error(`托管后端未就绪：${JSON.stringify(value)}`);
     await delay(20);
   }
 }

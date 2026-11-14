@@ -1,4 +1,6 @@
+import { isCompletionNotice, type CompletionNotice } from "./notifications.ts";
 import { object } from "./protocol.ts";
+import { isModelOption, type ModelOption } from "./models.ts";
 import { isCreation, type CreationRecord } from "./session-creation.ts";
 import { isTaskRecord, type TaskRecord } from "./tasks.ts";
 
@@ -20,7 +22,7 @@ export type Interaction = InteractionBase & (
   | { kind: "editor"; initial: string }
 );
 export type ManagementState = { state: "connecting" } | { state: "error"; message: string } |
-  { state: "ready"; workspaces: string[]; sessions: ManagedSession[]; interactions: Interaction[]; creations: CreationRecord[]; tasks: TaskRecord[]; issues: string[] };
+  { state: "ready"; models: ModelOption[]; workspaces: string[]; sessions: ManagedSession[]; interactions: Interaction[]; creations: CreationRecord[]; tasks: TaskRecord[]; notifications: CompletionNotice[]; issues: string[] };
 export interface RespondCommand { type: "respond"; id: string; sessionId: string; dialogId: string; value: string | null }
 export type RespondReply = { type: "responded"; id: string; ok: true } | { type: "responded"; id: string; ok: false; error: string };
 export interface ManagementMessage { type: "management"; value: ManagementState }
@@ -50,8 +52,8 @@ export function isInteraction(value: unknown): value is Interaction {
 }
 export function isManagement(value: unknown): value is ManagementState {
   return object(value) && (value.state === "connecting" || value.state === "error" && string(value.message) ||
-    value.state === "ready" && strings(value.workspaces) && Array.isArray(value.sessions) && value.sessions.every(isSession) &&
-    Array.isArray(value.interactions) && value.interactions.every(isInteraction) && Array.isArray(value.creations) && value.creations.every(isCreation) && Array.isArray(value.tasks) && value.tasks.every(isTaskRecord) && strings(value.issues));
+    value.state === "ready" && Array.isArray(value.models) && value.models.every(isModelOption) && strings(value.workspaces) && Array.isArray(value.sessions) && value.sessions.every(isSession) &&
+    Array.isArray(value.interactions) && value.interactions.every(isInteraction) && Array.isArray(value.creations) && value.creations.every(isCreation) && Array.isArray(value.tasks) && value.tasks.every(isTaskRecord) && Array.isArray(value.notifications) && value.notifications.length <= 100 && value.notifications.every(isCompletionNotice) && strings(value.issues));
 }
 export function isManagementMessage(value: unknown): value is ManagementMessage { return object(value) && value.type === "management" && isManagement(value.value); }
 export function isRespond(value: unknown): value is RespondCommand {

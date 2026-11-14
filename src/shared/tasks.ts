@@ -1,11 +1,12 @@
 import { object } from "./protocol.ts";
+import { isModelRef, type ModelRef } from "./models.ts";
 import { isAbsoluteDirectory, isCreatedSession, type CreatedSession } from "./session-creation.ts";
 
-export interface TaskInput { id: string; name: string; path: string; prompt: string; timeoutSeconds: number }
+export interface TaskInput { id: string; name: string; path: string; prompt: string; timeoutSeconds: number; model?: ModelRef }
 export type TaskState = "creating" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "timed_out" | "unknown" | "abandoned";
 export interface TaskRecord {
   id: string; name: string; path: string; state: TaskState; session: CreatedSession | null; file: string | null;
-  startedAt: string; updatedAt: string; revision: number; message: string;
+  startedAt: string; updatedAt: string; revision: number; message: string; replyId: string | null;
 }
 export type TaskCommand = { type: "startTask"; id: string; task: TaskInput } |
   { type: "cancelTask" | "acknowledgeTask"; id: string; runId: string };
@@ -17,13 +18,14 @@ export function isTaskInput(value: unknown): value is TaskInput {
   return object(value) && str(value.id) && value.id.length <= 128 && str(value.name) && value.name.trim().length > 0 && value.name.length <= 80 &&
     str(value.path) && value.path.length <= 4096 && !value.path.includes("\0") && isAbsoluteDirectory(value.path) &&
     str(value.prompt) && value.prompt.trim().length > 0 && value.prompt.length <= 16384 && !/^[!/]/.test(value.prompt.trimStart()) &&
-    typeof value.timeoutSeconds === "number" && Number.isInteger(value.timeoutSeconds) && value.timeoutSeconds >= 1 && value.timeoutSeconds <= 10800;
+    typeof value.timeoutSeconds === "number" && Number.isInteger(value.timeoutSeconds) && value.timeoutSeconds >= 1 && value.timeoutSeconds <= 10800 &&
+    (value.model === undefined || isModelRef(value.model));
 }
 export function isTaskRecord(value: unknown): value is TaskRecord {
   return object(value) && str(value.id) && str(value.name) && str(value.path) &&
     ["creating", "running", "waiting", "completed", "failed", "cancelled", "timed_out", "unknown", "abandoned"].includes(String(value.state)) &&
     (value.session === null || isCreatedSession(value.session)) && (str(value.file) || value.file === null) && str(value.startedAt) && str(value.updatedAt) &&
-    typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0 && str(value.message);
+    typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0 && str(value.message) && (value.replyId === null || str(value.replyId));
 }
 export function isTaskCommand(value: unknown): value is TaskCommand {
   return object(value) && str(value.id) && (value.type === "startTask" && isTaskInput(value.task) ||

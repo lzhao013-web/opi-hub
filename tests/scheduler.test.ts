@@ -18,7 +18,7 @@ class FakeNodes {
   async startTask(_device: string, input: TaskInput) {
     if (this.failure === "reject") throw new TaskRejectedError("节点明确拒绝启动");
     this.inputs.push(input); if (this.failure === "uncertain") throw new Error("确认连接中断");
-    const at = new Date().toISOString(); this.records.set(input.id, { id: input.id, name: input.name, path: input.path, state: "creating", session: null, file: null, message: "", revision: 0, startedAt: at, updatedAt: at });
+    const at = new Date().toISOString(); this.records.set(input.id, { id: input.id, name: input.name, path: input.path, state: "creating", session: null, file: null, message: "", replyId: null, revision: 0, startedAt: at, updatedAt: at });
   }
   state(id: string, state: TaskRecord["state"]) { const value = this.records.get(id); assert.ok(value); this.records.set(id, { ...value, state, revision: value.revision + 1 }); }
   async cancelTask(_device: string, id: string) { if (!this.online) throw new Error("离线"); this.state(id, "cancelled"); }
@@ -42,6 +42,23 @@ test("到期先落盘再下发，重复扫描不重复派发，上次未结束�
     env.nodes.state(first.id, "completed"); env.scheduler.tick(); assert.equal(env.store.run(first.id)?.state, "completed");
     env.scheduler.enable(plan.id, false); const manual = env.scheduler.runNow(plan.id); assert.equal(manual.trigger, "manual"); assert.equal(env.nodes.inputs.length, 2);
     assert.throws(() => env.scheduler.runNow(plan.id), /未结束|未确认/);
+  } finally { await env.close(); }
+});
+test("所选模型随计划和运行落盘，定时与手动下发一致，旧计划仍可读取", async () => {
+  const env = await fixture();
+  try {
+    const model = { provider: "fixture", id: "fast" };
+    const old = env.scheduler.add(definition); const plan = env.scheduler.add({ ...definition, model });
+    env.scheduler.enable(old.id, false); env.at("2026-11-07T09:00:00Z"); env.scheduler.tick();
+    const timer = env.store.runs()[0]; assert.ok(timer);
+    assert.deepEqual(timer.model, model); assert.deepEqual(env.nodes.inputs[0]?.model, model);
+    env.nodes.state(timer.id, "completed"); env.scheduler.tick(); const manual = env.scheduler.runNow(plan.id);
+    assert.deepEqual(manual.model, model); assert.deepEqual(env.nodes.inputs[1]?.model, model);
+    await env.scheduler.close(); const restored = await ScheduleStore.open(env.directory);
+    try {
+      assert.deepEqual(restored.plan(plan.id)?.model, model); assert.deepEqual(restored.run(timer.id)?.model, model);
+      assert.deepEqual(restored.run(manual.id)?.model, model); assert.equal(restored.plan(old.id)?.model, undefined);
+    } finally { restored.close(); }
   } finally { await env.close(); }
 });
 test("离线与中心长时间未扫描只记错过，不自动补跑", async () => {

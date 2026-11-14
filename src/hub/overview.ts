@@ -17,7 +17,7 @@ export function overview(store: Store, nodes: Nodes) {
       interactions.push(...management.interactions.map((dialog) => ({ ...dialog, deviceId: device.id })));
     }
     return { ...device, ...nodes.status(device.id), management: management?.state === "ready"
-      ? { state: "ready" as const, issues: management.issues } : management ?? { state: "connecting" as const } };
+      ? { state: "ready" as const, models: management.models, issues: management.issues } : management ?? { state: "connecting" as const } };
   });
   return { devices, workspaces, sessions, interactions, creations };
 }

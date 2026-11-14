@@ -9,13 +9,15 @@ export async function scheduleRoute(url: URL, req: IncomingMessage, res: ServerR
   if (url.pathname !== "/_hub/schedules" && !url.pathname.startsWith("/_hub/schedules/") && !url.pathname.startsWith("/_hub/runs/")) return false;
   const session = auth.require(req);
   if (url.pathname === "/_hub/schedules" && req.method === "GET") { reply(res, 200, scheduler.snapshot()); return true; }
+  const result = /^\/_hub\/runs\/([a-f0-9-]{36})$/.exec(url.pathname);
+  if (result?.[1] && req.method === "GET") { const run = scheduler.resultRun(result[1]); if (!run) throw new HttpError(404, "运行记录不存在"); reply(res, 200, run); return true; }
   auth.checkOrigin(req, origin);
   const controller = new AbortController(); const cancel = () => controller.abort();
   session.close.add(cancel); res.once("close", cancel);
   try {
     if (url.pathname === "/_hub/schedules" && req.method === "POST") {
       const body = await readJson(req);
-      if (!isPlanDefinition(body) || Object.keys(body).some((key) => !["name", "deviceId", "path", "prompt", "timeoutSeconds", "rule"].includes(key))) throw new HttpError(400, "计划字段无效。任务需为自然语言，不接受 ! 或 / 命令，超时范围 1–10800 秒。");
+      if (!isPlanDefinition(body) || Object.keys(body).some((key) => !["name", "deviceId", "path", "prompt", "timeoutSeconds", "rule", "model"].includes(key))) throw new HttpError(400, "计划字段无效。模型需包含非空 provider 和 id。任务需为自然语言，不接受 ! 或 / 命令，超时范围 1–10800 秒。");
       reply(res, 201, scheduler.add(body)); return true;
     }
     const plan = /^\/_hub\/schedules\/([a-f0-9-]{36})(?:\/(enable|run))?$/.exec(url.pathname);

@@ -1,4 +1,5 @@
 import { object } from "./protocol.ts";
+import { isModelRef, type ModelRef } from "./models.ts";
 import { isTaskInput, type TaskState } from "./tasks.ts";
 import { isCreatedSession, type CreatedSession } from "./session-creation.ts";
 
@@ -6,12 +7,12 @@ export type ScheduleRule = { kind: "once"; local: string; timeZone: string } |
   { kind: "daily"; time: string; timeZone: string } | { kind: "weekly"; time: string; timeZone: string; days: number[] } |
   { kind: "interval"; start: string; end: string; minutes: number; timeZone: string } |
   { kind: "dailyInterval"; start: string; end: string; minutes: number; timeZone: string };
-export interface PlanDefinition { name: string; deviceId: string; path: string; prompt: string; timeoutSeconds: number; rule: ScheduleRule }
+export interface PlanDefinition { name: string; deviceId: string; path: string; prompt: string; timeoutSeconds: number; rule: ScheduleRule; model?: ModelRef }
 export interface Plan extends PlanDefinition { id: string; enabled: boolean; archived: boolean; nextAt: string | null; createdAt: string }
 export type RunState = TaskState | "dispatching" | "missed" | "skipped";
 export interface ScheduleRun {
   id: string; planId: string; name: string; deviceId: string; path: string; scheduledAt: string; trigger: "timer" | "manual";
-  state: RunState; session: CreatedSession | null; file: string | null; message: string; nodeRevision: number; updatedAt: string;
+  state: RunState; session: CreatedSession | null; file: string | null; message: string; nodeRevision: number; updatedAt: string; replyId?: string | null; model?: ModelRef;
 }
 const str = (value: unknown): value is string => typeof value === "string";
 const localDateTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/;
@@ -37,5 +38,5 @@ export function isPlan(value: unknown): value is Plan {
 export function isRun(value: unknown): value is ScheduleRun {
   return object(value) && str(value.id) && str(value.planId) && str(value.name) && str(value.deviceId) && str(value.path) && str(value.scheduledAt) &&
     (value.trigger === "timer" || value.trigger === "manual") && ["dispatching", "creating", "running", "waiting", "completed", "failed", "cancelled", "timed_out", "unknown", "abandoned", "missed", "skipped"].includes(String(value.state)) &&
-    (value.session === null || isCreatedSession(value.session)) && (value.file === null || str(value.file)) && str(value.message) && str(value.updatedAt) && typeof value.nodeRevision === "number" && Number.isInteger(value.nodeRevision);
+    (value.session === null || isCreatedSession(value.session)) && (value.file === null || str(value.file)) && str(value.message) && str(value.updatedAt) && typeof value.nodeRevision === "number" && Number.isInteger(value.nodeRevision) && (value.replyId === undefined || value.replyId === null || str(value.replyId)) && (value.model === undefined || isModelRef(value.model));
 }
