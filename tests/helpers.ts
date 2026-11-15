@@ -122,6 +122,12 @@ export async function fakeOpi(name: string) {
         res.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "default-src 'self'; script-src 'self'; img-src 'self'; connect-src 'self'", "Referrer-Policy": "no-referrer" }); res.end(html); return;
       }
       if (url.pathname === "/app.js") { res.setHeader("Content-Type", "text/javascript"); res.end(app); return; }
+      if (url.pathname === "/assets/cache-Ab12_cd3.js") {
+        const body = `export default ${JSON.stringify(name)};\n/*${"cache-fixture 中文 ".repeat(8192)}*/`;
+        const etag = '"cache-fixture"'; res.setHeader("ETag", etag);
+        if (req.headers["if-none-match"]?.replace(/^W\//, "") === etag) { res.writeHead(304).end(); return; }
+        res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Content-Length": Buffer.byteLength(body) }); res.end(req.method === "HEAD" ? undefined : body); return;
+      }
       if (url.pathname === "/api/file") {
         if (!clients.has(url.searchParams.get("client") ?? "")) { res.writeHead(403).end(); return; }
         res.setHeader("Content-Type", "image/svg+xml"); res.end(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text>${name}</text></svg>`); return;

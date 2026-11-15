@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Duplex } from "node:stream";
+import type { Duplex, Writable } from "node:stream";
+import { createGzip, type Gzip } from "node:zlib";
 import { WebSocket, type WebSocketServer } from "ws";
 import { forwardedRequest, HttpError } from "../shared/http.ts";
 import { isReply, json, object, parse, send } from "../shared/protocol.ts";
@@ -7,13 +8,18 @@ import { buffer, couple, forward } from "../shared/sockets.ts";
 import type { Session } from "./auth.ts";
 import type { Nodes } from "./nodes.ts";
 import { adaptHtml, devicePrefix } from "./native.ts";
+import { configureAssetResponse, isHashedAssetRequest } from "./static-assets.ts";
 
 export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req: IncomingMessage, res: ServerResponse, session: Session): Promise<void> {
   const abort = new AbortController();
   const cancel = () => abort.abort();
   res.once("close", cancel);
+  const headers = forwardedRequest(req);
+  if (isHashedAssetRequest(pathname, req)) for (const name of ["if-none-match", "if-modified-since"]) {
+    const value = req.headers[name]; if (typeof value === "string") headers[name] = value;
+  }
   let tunnel: WebSocket;
-  try { tunnel = await nodes.open(id, { kind: "http", method: req.method ?? "GET", path: pathname, headers: forwardedRequest(req) }, abort.signal); }
+  try { tunnel = await nodes.open(id, { kind: "http", method: req.method ?? "GET", path: pathname, headers }, abort.signal); }
   catch (error) { res.off("close", cancel); throw new HttpError(502, error instanceof Error ? error.message : "设备连接失败"); }
   const stop = () => { tunnel.terminate(); if (!res.writableFinished) res.destroy(); };
   session.close.add(stop);
@@ -21,18 +27,24 @@ export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req:
   let ended = false;
   let html: Buffer[] | undefined;
   let htmlSize = 0;
+  let output: Writable = res;
+  let compression: Gzip | undefined;
   const operation = req.method === "POST" && /^\/api\/(?:action|query)(?:\?|$)/.test(pathname);
   let timeout = setTimeout(() => { fail(new Error("节点 HTTP 通道就绪超时")); }, 10_000);
   const fail = (error: Error) => {
-    if (!res.headersSent) res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" }).end(error.message);
-    else if (!res.writableFinished) res.destroy(error);
+    compression?.unpipe(res); compression?.destroy();
+    if (!res.headersSent) {
+      for (const name of ["Content-Encoding", "Content-Length", "Content-Range", "ETag", "Last-Modified"]) res.removeHeader(name);
+      res.setHeader("Cache-Control", "no-store");
+      res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" }).end(error.message);
+    } else if (!res.writableFinished) res.destroy(error);
     tunnel.terminate();
   };
   const cleanup = () => {
     clearTimeout(timeout); session.close.delete(stop); res.off("close", cancel);
   };
-  res.once("close", () => { if (!ended) tunnel.terminate(); cleanup(); });
-  res.on("drain", () => { if (tunnel.readyState === WebSocket.OPEN) tunnel.resume(); });
+  res.once("close", () => { if (!ended) tunnel.terminate(); compression?.destroy(); cleanup(); });
+  const resume = () => { if (tunnel.readyState === WebSocket.OPEN) tunnel.resume(); };
   tunnel.on("message", (raw, binary) => {
     try {
       if (binary) {
@@ -42,7 +54,7 @@ export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req:
           htmlSize += data.length;
           if (htmlSize > 2 * 1024 * 1024) throw new Error("HTML 入口过大");
           html.push(data);
-        } else if (!res.write(data)) tunnel.pause();
+        } else if (!output.write(data)) tunnel.pause();
         return;
       }
       const value = parse(raw.toString());
@@ -60,6 +72,10 @@ export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req:
         const location = value.headers.location;
         if (location?.startsWith("/") && !location.startsWith("//")) res.setHeader("Location", devicePrefix(id).slice(0, -1) + location);
         res.statusCode = value.status;
+        if (configureAssetResponse(pathname, req, res, value.status, value.headers)) {
+          compression = createGzip({ level: 3 }); compression.on("error", fail); compression.pipe(res); output = compression;
+        }
+        output.on("drain", resume);
         if (value.headers["content-type"]?.includes("text/html") && req.method !== "HEAD" && pathname.split("?")[0] === "/") {
           html = []; res.removeHeader("Content-Length");
         }
@@ -67,13 +83,12 @@ export async function proxyHttp(nodes: Nodes, id: string, pathname: string, req:
         if (!received || ended) throw new Error("无效的响应结束");
         ended = true;
         if (html) res.end(adaptHtml(Buffer.concat(html).toString("utf8"), id));
-        else res.end();
-        tunnel.close(1000);
-        cleanup();
+        else output.end();
+        clearTimeout(timeout); tunnel.close(1000);
       }
     } catch (error) { fail(error instanceof Error ? error : new Error("设备响应失败")); }
   });
-  tunnel.once("close", () => { if (!ended) fail(new Error("设备连接中断，请检查会话状态后再决定是否重试")); cleanup(); });
+  tunnel.once("close", () => { if (!ended) fail(new Error("设备连接中断，请检查会话状态后再决定是否重试")); });
   tunnel.on("error", fail);
   let uploading = false;
   async function upload(): Promise<void> {

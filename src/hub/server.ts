@@ -11,6 +11,7 @@ import { Store } from "./store.ts";
 import { Nodes } from "./nodes.ts";
 import { HttpError, readJson, reply } from "../shared/http.ts";
 import { MAX_FRAME, object } from "../shared/protocol.ts";
+import { DATA_COMPRESSION } from "../shared/sockets.ts";
 import { resolveDevice } from "./native.ts";
 import { proxyHttp, proxyWebSocket } from "./proxy.ts";
 import { overview } from "./overview.ts";
@@ -40,7 +41,7 @@ export async function startHub(options: HubOptions) {
   let scheduler: Scheduler;
   try { scheduler = new Scheduler(scheduleStore, nodes, (id) => Boolean(store.get(id))); }
   catch (error) { scheduleStore.close(); auth.close(); nodes.close(); throw error; }
-  const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: false });
+  const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: DATA_COMPRESSION });
   const assets: Record<string, { file: string; type: string }> = {
     "/": { file: "index.html", type: "text/html; charset=utf-8" },
     "/_hub/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },

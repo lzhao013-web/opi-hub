@@ -1,5 +1,11 @@
-import { WebSocket, type RawData } from "ws";
+import { WebSocket, type PerMessageDeflateOptions, type RawData } from "ws";
 import { MAX_FRAME, send } from "./protocol.ts";
+
+/** 跨设备数据逐帧压缩，不跨消息复用字典，限制压缩并发与小帧开销。 */
+export const DATA_COMPRESSION = {
+  serverNoContextTakeover: true, clientNoContextTakeover: true,
+  threshold: 1024, concurrencyLimit: 4, zlibDeflateOptions: { level: 3 },
+} satisfies PerMessageDeflateOptions;
 
 export function buffer(data: RawData): Buffer {
   return Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data);
