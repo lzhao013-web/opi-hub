@@ -1,0 +1,126 @@
+import { test, type TestContext } from "node:test";
+import assert from "node:assert/strict";
+import childProcess, { ChildProcess, type ExecFileException, type ExecFileOptions } from "node:child_process";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
+import { createSystemNotifier, notificationCommand } from "../src/node/system-notifications.ts";
+import { LocalNotifications } from "../src/node/notifications.ts";
+import type { NodeCompletionNotice } from "../src/shared/notifications.ts";
+
+const notice: NodeCompletionNotice = { id: "windows", deviceId: "00000000-0000-0000-0000-000000000001", deviceName: "测试设备", title: "中文 & <标题> ' $() 😀", completedAt: "2026-11-14T10:00:00.000Z" };
+interface Invocation { program: string; args: string[]; options: ExecFileOptions; input: string }
+interface Result { error: ExecFileException | null; stderr: string }
+const success: Result = { error: null, stderr: "" };
+function script(args: string[]): string {
+  const encoded = args.indexOf("-EncodedCommand");
+  const value = args[encoded >= 0 ? encoded + 1 : args.indexOf("-Command") + 1];
+  assert.ok(value); return encoded >= 0 ? Buffer.from(value, "base64").toString("utf16le") : value;
+}
+function windowsEnvironment(t: TestContext, result: (call: Invocation) => Result = () => success): Invocation[] {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform"); assert.ok(descriptor);
+  const session = process.env.SESSIONNAME; process.env.SESSIONNAME = "Console";
+  Object.defineProperty(process, "platform", { value: "win32" });
+  const calls: Invocation[] = [];
+  t.after(() => {
+    t.mock.restoreAll(); syncBuiltinESMExports(); Object.defineProperty(process, "platform", descriptor);
+    if (session === undefined) delete process.env.SESSIONNAME; else process.env.SESSIONNAME = session;
+  });
+  t.mock.method(fs, "access", async () => {});
+  t.mock.method(childProcess, "spawn", () => {
+    const child = new ChildProcess(); queueMicrotask(() => child.emit("close", 0)); return child;
+  });
+  t.mock.method(childProcess, "execFile", (program: string, args: string[], options: ExecFileOptions, callback: (error: ExecFileException | null, stdout: string, stderr: string) => void) => {
+    const child = new ChildProcess(); child.stdin = new PassThrough();
+    const call: Invocation = { program, args, options, input: "" }; calls.push(call);
+    child.stdin.on("data", (chunk: Buffer) => { call.input += chunk.toString("utf8"); });
+    queueMicrotask(() => { const value = result(call); callback(value.error, "", value.stderr); });
+    return child;
+  });
+  syncBuiltinESMExports(); return calls;
+}
+
+test("Windows 订阅前验证已注册应用和通知权限，探测不发送弹窗", async (t) => {
+  const calls = windowsEnvironment(t);
+  const sender = await createSystemNotifier(); assert.ok(sender);
+  assert.equal(calls.length, 1);
+  const probe = calls[0]; assert.ok(probe);
+  const source = script(probe.args);
+  assert.ok(source.includes("Get-StartApps")); assert.ok(source.includes(".AppID"));
+  assert.ok(source.includes(".get_Setting()")); assert.ok(!source.includes(".Show("));
+  assert.ok(!source.includes("Microsoft.Windows.PowerShell")); assert.equal(probe.input, "");
+  assert.equal(probe.options.windowsHide, true); assert.equal(probe.options.shell, false);
+  const signal = new AbortController().signal; await sender(notice, signal);
+  const sent = calls[1]; assert.ok(sent);
+  assert.ok(script(sent.args).includes("Get-StartApps")); assert.ok(script(sent.args).includes(".get_Setting()"));
+  assert.ok(!script(sent.args).includes(notice.title)); assert.ok(script(sent.args).includes(".Show("));
+  assert.deepEqual(JSON.parse(sent.input), { title: "o-pi 执行已完成", body: `${notice.deviceName} · ${notice.title}` });
+  assert.equal(sent.options.signal, signal); assert.equal(sent.options.windowsHide, true); assert.equal(sent.options.shell, false);
+});
+
+test("Windows 缺失注册或系统禁用通知时不宣告可用，并保留诊断原因", async (t) => {
+  let diagnostic = "未找到已注册的 Windows PowerShell 通知应用标识";
+  windowsEnvironment(t, () => ({ error: Object.assign(new Error("不应记录包含整个脚本的错误"), { code: 1 }), stderr: diagnostic }));
+  for (const reason of [diagnostic, "Windows 通知不可用：DisabledForUser", "Windows 通知不可用：DisabledByGroupPolicy"]) {
+    diagnostic = reason; const logs: string[] = [];
+    const local = new LocalNotifications(true, (line) => logs.push(line));
+    assert.equal(await local.ready, false); await local.receive(notice); local.close();
+    assert.ok(logs.some((line) => line.includes(reason) && line.includes("未订阅中心提醒")));
+    assert.ok(!logs.join("").includes("不应记录包含整个脚本的错误"));
+  }
+});
+
+test("通知发送失败保留退出码和有界诊断，不重试或记录命令全文", async (t) => {
+  const calls = windowsEnvironment(t, (call) => call.input ? {
+    error: Object.assign(new Error(`不应记录：${notice.title}`), { code: 7 }), stderr: `WinRT failure 0x80070490\r\n${"x".repeat(2000)}\u001b[31m`,
+  } : success);
+  const logs: string[] = []; const local = new LocalNotifications(true, (line) => logs.push(line));
+  assert.equal(await local.ready, true); await local.receive(notice); await local.receive(notice); local.close();
+  assert.equal(calls.filter((call) => call.input).length, 1);
+  const message = logs.find((line) => line.includes("未自动重试")); assert.ok(message);
+  assert.ok(message.includes("7")); assert.ok(message.includes("0x80070490"));
+  assert.ok(message.length < 1000); assert.ok(!/[\r\n\u001b]/.test(message)); assert.ok(!message.includes(notice.title));
+});
+
+test("Windows 命令不再使用未注册的固定应用标识", () => {
+  const command = notificationCommand("win32", { SESSIONNAME: "Console" }, notice); assert.ok(command);
+  const source = script(command.args);
+  assert.ok(!source.includes("Microsoft.Windows.PowerShell"));
+  assert.ok(source.includes("Get-StartApps")); assert.ok(source.includes(".AppID"));
+});
+
+test("Windows 原生无弹窗探测拒绝仅有显示名称或错误标识的应用", { skip: process.platform !== "win32", timeout: 15_000 }, async (t) => {
+  const calls = windowsEnvironment(t); await createSystemNotifier();
+  const probe = calls[0]; assert.ok(probe);
+  const source = script(probe.args); assert.ok(!source.includes(".Show("));
+  const fakeApps = "function Get-StartApps { [pscustomobject]@{ Name='Windows PowerShell'; AppID='Microsoft.Windows.PowerShell' } }\n";
+  const result = childProcess.spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(fakeApps + source, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 10_000 });
+  assert.equal(result.status, 1); assert.match(result.stderr, /未找到已注册/);
+});
+
+test("Windows 原生探测只兼容首次设置缺失，不吞掉禁用状态和其他 WinRT 错误", { skip: process.platform !== "win32", timeout: 20_000 }, async (t) => {
+  const calls = windowsEnvironment(t); await createSystemNotifier();
+  const probe = calls[0]; assert.ok(probe);
+  const source = script(probe.args); assert.ok(!source.includes(".Show("));
+  const factory = "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId)";
+  assert.equal(source.split(factory).length, 2);
+  const cases = [
+    { getter: "return 'Enabled'", status: 0, diagnostic: "" },
+    { getter: "throw [System.Runtime.InteropServices.COMException]::new('首次设置缺失', -2147023728)", status: 0, diagnostic: "" },
+    { getter: "return 'DisabledForUser'", status: 1, diagnostic: "DisabledForUser" },
+    { getter: "return 'DisabledForApplication'", status: 1, diagnostic: "DisabledForApplication" },
+    { getter: "return 'DisabledByGroupPolicy'", status: 1, diagnostic: "DisabledByGroupPolicy" },
+    { getter: "throw [System.Runtime.InteropServices.COMException]::new('访问被拒绝', -2147024891)", status: 1, diagnostic: "访问被拒绝" },
+  ];
+  for (const value of cases) {
+    // 只替换 Windows 外部 API，不注册应用、不修改权限，也不调用 Show。
+    const external = `function Get-StartApps { [pscustomobject]@{ Name='本地化名称'; AppID='{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe' } }
+$mockNotifier = New-Object psobject
+$mockNotifier | Add-Member -MemberType ScriptMethod -Name get_Setting -Value { ${value.getter} }
+`;
+    const mocked = external + source.replace(factory, "$mockNotifier");
+    const result = childProcess.spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(mocked, "utf16le").toString("base64")], { encoding: "utf8", windowsHide: true, timeout: 10_000 });
+    assert.equal(result.status, value.status, result.stderr);
+    if (value.diagnostic) assert.ok(result.stderr.includes(value.diagnostic), result.stderr);
+  }
+});
