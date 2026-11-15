@@ -1,6 +1,6 @@
 import { hostname, platform } from "node:os";
 import { WebSocket } from "ws";
-import { isOpen, json, MAX_FRAME, parse, webSocketUrl } from "../shared/protocol.ts";
+import { isOpen, json, MAX_FRAME, MAX_DATA_FRAME, parse, webSocketUrl } from "../shared/protocol.ts";
 import { buffer, connected, DATA_COMPRESSION } from "../shared/sockets.ts";
 import { serveHttp, serveWebSocket } from "./transport.ts";
 import { isSessionCommand, isCancelDirectories, type SessionResponse } from "../shared/session-creation.ts";
@@ -123,7 +123,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
             }
             if (!isOpen(request)) throw new Error("无效转发请求");
             if (sockets.size >= 128) throw new Error("连接数超过限制");
-            const tunnel = track(new WebSocket(webSocketUrl(config.hub, `/_hub/stream/${request.id}`), { ...options, perMessageDeflate: DATA_COMPRESSION }));
+            const tunnel = track(new WebSocket(webSocketUrl(config.hub, `/_hub/stream/${request.id}`), { ...options, maxPayload: MAX_DATA_FRAME, perMessageDeflate: DATA_COMPRESSION }));
             void (async () => {
               await connected(tunnel); const target = runtime.target;
               if (request.kind === "http") { await serveHttp(tunnel, target, request); await json(tunnel, { type: "ready" }); }

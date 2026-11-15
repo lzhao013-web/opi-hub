@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import { WebSocket } from "ws";
 import { forwardedResponse } from "../shared/http.ts";
-import { json, MAX_FRAME, object, parse, send, type OpenRequest } from "../shared/protocol.ts";
+import { json, MAX_DATA_FRAME, object, parse, send, type OpenRequest } from "../shared/protocol.ts";
 import { buffer, connected, couple, forward } from "../shared/sockets.ts";
 
 export async function serveHttp(tunnel: WebSocket, target: URL, request: OpenRequest): Promise<void> {
@@ -45,13 +45,13 @@ export async function serveWebSocket(tunnel: WebSocket, target: URL, request: Op
   url.protocol = target.protocol === "https:" ? "wss:" : "ws:";
   // URL 的 host 始终来自本机配置，不能由中心下发的路径改变。
   url.host = target.host;
-  const local = new WebSocket(url, { headers: { ...request.headers, Origin: target.origin }, maxPayload: MAX_FRAME, perMessageDeflate: false });
+  const local = new WebSocket(url, { headers: { ...request.headers, Origin: target.origin }, maxPayload: MAX_DATA_FRAME, perMessageDeflate: false });
   observe?.(local);
   const early: { data: Buffer; binary: boolean }[] = [];
   let size = 0;
   const collect = (raw: import("ws").RawData, binary: boolean) => {
     const data = buffer(raw); size += data.length;
-    if (size > MAX_FRAME * 2) { local.terminate(); tunnel.terminate(); return; }
+    if (size > MAX_DATA_FRAME * 2) { local.terminate(); tunnel.terminate(); return; }
     early.push({ data, binary }); local.pause();
   };
   local.on("message", collect);

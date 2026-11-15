@@ -1,5 +1,5 @@
 import { WebSocket, type PerMessageDeflateOptions, type RawData } from "ws";
-import { MAX_FRAME, send } from "./protocol.ts";
+import { MAX_DATA_FRAME, send } from "./protocol.ts";
 
 /** 跨设备数据逐帧压缩，不跨消息复用字典，限制压缩并发与小帧开销。 */
 export const DATA_COMPRESSION = {
@@ -17,7 +17,7 @@ export function forward(source: WebSocket, target: WebSocket): void {
   source.on("message", (raw, binary) => {
     const data = buffer(raw);
     queued += data.length;
-    if (queued > MAX_FRAME * 2) { source.terminate(); target.terminate(); return; }
+    if (queued > MAX_DATA_FRAME * 2) { source.terminate(); target.terminate(); return; }
     source.pause();
     writing = writing.then(() => send(target, data, binary)).then(() => {
       queued -= data.length;

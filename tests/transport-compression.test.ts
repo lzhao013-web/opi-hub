@@ -8,7 +8,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { fixture, fakeOpi, managedConfig } from "./helpers.ts";
 import { startNode } from "../src/node/agent.ts";
 import { isReport } from "../src/shared/backend.ts";
-import { MAX_FRAME, json, object, parse } from "../src/shared/protocol.ts";
+import { MAX_DATA_FRAME, json, object, parse } from "../src/shared/protocol.ts";
 import { buffer, connected } from "../src/shared/sockets.ts";
 
 test("浏览器 WebSocket 协商无上下文复用压缩，大文本与二进制保持一致，旧客户端仍可连接", { timeout: 20_000 }, async () => {
@@ -35,13 +35,18 @@ test("浏览器 WebSocket 协商无上下文复用压缩，大文本与二进制
   } finally { await env.close(); }
 });
 
-test("压缩帧仍按解压后的 16 MiB 限额拒绝过大消息", { timeout: 20_000 }, async () => {
+test("压缩数据按解压后的 64 MiB 边界完整双向转发，超限仍拒绝", { timeout: 20_000 }, async () => {
   const env = await fixture();
   const ws = new WebSocket(env.hub.url.replace("http:", "ws:") + `/n/${env.a.id}/api/events`, { headers: { Cookie: env.cookie, Origin: env.hub.url } });
   try {
     const first = new Promise<void>((resolve) => ws.once("message", () => resolve())); await connected(ws); await first;
-    const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code))); ws.on("error", () => {});
-    ws.send(Buffer.alloc(MAX_FRAME + 1, 65)); assert.equal(await closed, 1009);
+    const received = Promise.withResolvers<{ bytes: Buffer; binary: boolean }>();
+    ws.once("message", (raw, binary) => received.resolve({ bytes: buffer(raw), binary }));
+    ws.once("close", (code) => received.reject(new Error(`边界内数据转发断开：${code}`))); ws.on("error", received.reject);
+    ws.send(Buffer.alloc(MAX_DATA_FRAME, 65));
+    const result = await received.promise; assert.equal(result.binary, true); assert.equal(result.bytes.length, MAX_DATA_FRAME); assert.ok(result.bytes.every((byte) => byte === 65));
+    const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)));
+    ws.send(Buffer.alloc(MAX_DATA_FRAME + 1, 65)); assert.equal(await closed, 1009);
   } finally { ws.terminate(); await env.close(); }
 });
 

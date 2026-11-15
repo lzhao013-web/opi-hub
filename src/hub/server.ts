@@ -10,7 +10,7 @@ import { Auth } from "./auth.ts";
 import { Store } from "./store.ts";
 import { Nodes } from "./nodes.ts";
 import { HttpError, readJson, reply } from "../shared/http.ts";
-import { MAX_FRAME, object } from "../shared/protocol.ts";
+import { MAX_FRAME, MAX_DATA_FRAME, object } from "../shared/protocol.ts";
 import { DATA_COMPRESSION } from "../shared/sockets.ts";
 import { resolveDevice } from "./native.ts";
 import { proxyHttp, proxyWebSocket } from "./proxy.ts";
@@ -41,7 +41,8 @@ export async function startHub(options: HubOptions) {
   let scheduler: Scheduler;
   try { scheduler = new Scheduler(scheduleStore, nodes, (id) => Boolean(store.get(id))); }
   catch (error) { scheduleStore.close(); auth.close(); nodes.close(); throw error; }
-  const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: DATA_COMPRESSION });
+  const controls = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME, perMessageDeflate: false });
+  const sockets = new WebSocketServer({ noServer: true, maxPayload: MAX_DATA_FRAME, perMessageDeflate: DATA_COMPRESSION });
   const assets: Record<string, { file: string; type: string }> = {
     "/": { file: "index.html", type: "text/html; charset=utf-8" },
     "/_hub/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
@@ -199,7 +200,7 @@ export async function startHub(options: HubOptions) {
           const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
           const device = token ? store.authenticate(token) : undefined;
           if (!device) throw new HttpError(401, "Invalid device credentials");
-          if (url.pathname === "/_hub/connect") sockets.handleUpgrade(req, socket, head, (ws) => nodes.register(device.id, ws));
+          if (url.pathname === "/_hub/connect") controls.handleUpgrade(req, socket, head, (ws) => nodes.register(device.id, ws));
           else {
             const id = url.pathname.slice("/_hub/stream/".length);
             if (!nodes.accepts(device.id, id)) throw new HttpError(403, "Expired stream");
@@ -219,7 +220,7 @@ export async function startHub(options: HubOptions) {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject); server.listen(options.port, options.host, () => { server.off("error", reject); resolve(); });
     });
-  } catch (error) { sockets.close(); auth.close(); nodes.close(); await scheduler.close(); throw error; }
+  } catch (error) { controls.close(); sockets.close(); auth.close(); nodes.close(); await scheduler.close(); throw error; }
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("未能取得监听地址");
   const host = options.host.includes(":") ? `[${options.host}]` : options.host;
@@ -231,8 +232,10 @@ export async function startHub(options: HubOptions) {
     async close() {
       if (closed) return;
       closed = true; scheduler.stop(); auth.close(); nodes.close();
-      for (const ws of sockets.clients) ws.terminate();
-      sockets.close();
+      for (const group of [controls, sockets]) {
+        for (const ws of group.clients) ws.terminate();
+        group.close();
+      }
       const closing = new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
       server.closeAllConnections();
       await scheduler.close(); await closing;

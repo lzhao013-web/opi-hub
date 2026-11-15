@@ -66,6 +66,7 @@ export async function fakeOpi(name: string) {
   let catalogReads = 0;
   let historyGate: Promise<void> | undefined;
   let directoryGate: Promise<void> | undefined;
+  let initialSnapshot: unknown;
   let newCalls = 0; let workspaceCalls = 0; let directoryReads = 0;
   const cwd = `/fixture/${name}`;
   const history: FixtureHistory[] = [
@@ -229,7 +230,7 @@ export async function fakeOpi(name: string) {
       const requested = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
       const client: FixtureClient = { ws, sequence: 0, all: false, acknowledgements: 0, historyQuery: requested === "hub-history-query", purpose: requested, session: requested ? activity.find((item) => item.sessionId === requested)?.sessionId ?? null : "runtime-1" };
       clients.set(id, client);
-      send(client, [{ type: "client", id }, { type: "selected", session: selected(client) }, { type: "workspaces", value: [...new Set(history.map((item) => item.cwd))].map((path) => ({ path, exists: true })) }, { type: "sessions", value: history.filter((item) => item.cwd === cwd) }, { type: "activity", value: activity.filter((item) => !hiddenActivity.has(item.sessionId)) }, { type: "dialogs", value: dialogs.get(client.session ?? "") ?? [] }, { type: "snapshot", value: execution.snapshot(client.session) }], id);
+      send(client, [{ type: "client", id }, { type: "selected", session: selected(client) }, { type: "workspaces", value: [...new Set(history.map((item) => item.cwd))].map((path) => ({ path, exists: true })) }, { type: "sessions", value: history.filter((item) => item.cwd === cwd) }, { type: "activity", value: activity.filter((item) => !hiddenActivity.has(item.sessionId)) }, { type: "dialogs", value: dialogs.get(client.session ?? "") ?? [] }, { type: "snapshot", value: initialSnapshot ?? execution.snapshot(client.session) }], id);
       ws.on("message", (raw, binary) => {
         if (!binary) {
           const value: unknown = JSON.parse(raw.toString());
@@ -246,6 +247,7 @@ export async function fakeOpi(name: string) {
   if (!address || typeof address === "string") throw new Error("No address");
   return {
     url: `http://127.0.0.1:${address.port}`, leaked: () => leaked, setDialogs, answers, prompts: execution.prompts, modelChanges: execution.modelChanges,
+    setInitialSnapshot(value: unknown) { initialSnapshot = value; },
     setModels(models: ModelOption[]) { execution.models = models; publish(); },
     model: (id: string) => execution.model(id),
     selections: () => [...clients.values()].map((client) => client.session),

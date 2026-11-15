@@ -1,6 +1,8 @@
 import { WebSocket } from "ws";
 
 export const MAX_FRAME = 16 * 1024 * 1024;
+// 原生会话快照可能超过控制消息限额，数据通道单独限制解压后的完整消息。
+export const MAX_DATA_FRAME = 64 * 1024 * 1024;
 export type Headers = Record<string, string>;
 export type OpenRequest = { type: "open"; id: string; kind: "http" | "websocket"; method: string; path: string; headers: Headers };
 export type HttpReply = { type: "response"; status: number; headers: Headers } | { type: "end" } | { type: "error"; message: string };

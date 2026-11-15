@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import { WebSocket } from "ws";
-import { MAX_FRAME, json, parse, webSocketUrl } from "../../shared/protocol.ts";
+import { MAX_DATA_FRAME, json, parse, webSocketUrl } from "../../shared/protocol.ts";
 import { buffer } from "../../shared/sockets.ts";
 import { decodeEvent, decodeFrame, type OpiEvent, type OpiFrame } from "./wire.ts";
 
@@ -22,7 +22,7 @@ export class OpiClient {
   constructor(target: URL, onEvent: (event: OpiEvent) => void, sessionId?: string, observe?: (event: unknown) => void) {
     this.target = target;
     const path = `/api/events${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ""}`;
-    this.ws = new WebSocket(webSocketUrl(target.origin, path), { headers: { Origin: target.origin }, maxPayload: MAX_FRAME, perMessageDeflate: false, handshakeTimeout: 10_000 });
+    this.ws = new WebSocket(webSocketUrl(target.origin, path), { headers: { Origin: target.origin }, maxPayload: MAX_DATA_FRAME, perMessageDeflate: false, handshakeTimeout: 10_000 });
     const timeout = setTimeout(() => this.fail(new Error("o-pi 客户端握手超时")), 10_000);
     this.ws.on("message", (raw, binary) => {
       try {
