@@ -6,10 +6,14 @@ import type { ApprovalDecision, NodeApprovalNotice, NodeCompletionNotice } from 
 import { approvalClickUri } from "./windows-approval-clicks.ts";
 
 export type DesktopNotice = NodeCompletionNotice | (NodeApprovalNotice & { receiverId: string; url?: string });
-export type NotificationSender = (notice: DesktopNotice, signal: AbortSignal) => Promise<void>;
+export type NotificationSender = ((notice: DesktopNotice, signal: AbortSignal, completionLink?: string) => Promise<void>) & {
+  waitForCompletionClick?: (notice: NodeCompletionNotice, signal: AbortSignal, url: string) => Promise<void>;
+};
 export type LinuxApprovalSender = (notice: NodeApprovalNotice, signal: AbortSignal, url?: string) => Promise<ApprovalDecision | undefined>;
 const approvalLabels = { allow: "仅本次允许", deny: "拒绝" } as const;
 const legacyDecisions = ["allow", "deny"] as const;
+const linuxActionWait = 120_000;
+const linuxOpenActions = (label: string) => [`--action=default=${label}`, `--action=open=${label}`];
 export interface NotificationCommand { program: string; args: string[]; input?: string }
 const appleScript = 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run';
 // 探测和发送共用注册身份与权限检查，不能把能启动 PowerShell 当作通知可用。
@@ -77,8 +81,16 @@ ${windowsSetup}${body}
 const linuxDesktop = (env: NodeJS.ProcessEnv) => (env.DISPLAY || env.WAYLAND_DISPLAY) && (env.DBUS_SESSION_BUS_ADDRESS || env.XDG_RUNTIME_DIR);
 const isTermux = (env: NodeJS.ProcessEnv) => Boolean(env.TERMUX_VERSION || env.PREFIX?.startsWith("/data/data/com.termux/"));
 const escapeBody = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+function completionText(notice: NodeCompletionNotice) {
+  const clean = (text: string) => Array.from(text.replace(/[\u0000-\u001f\u007f]/g, " ")).slice(0, 256).join("");
+  return { title: "o-pi 执行已完成", body: `${clean(notice.deviceName)} · ${clean(notice.title) || "未命名会话"}` };
+}
+function linuxCompletionArgs(notice: NodeCompletionNotice, actions: string[] = []) {
+  const { title, body } = completionText(notice);
+  return ["--app-name=opi-hub", "--icon=dialog-information", "--urgency=normal", ...actions, "--", title, escapeBody(body)];
+}
 
-export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: DesktopNotice): NotificationCommand | null {
+export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: DesktopNotice, completionLink?: string): NotificationCommand | null {
   if ("receiverId" in notice) {
     if (platform !== "win32" || env.SESSIONNAME?.toLowerCase() === "services") return null;
     const { title, body, receiverId, id, detail, url } = notice;
@@ -88,19 +100,19 @@ export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.Proce
     if (url) actions.push({ label: "查看审批", uri: url });
     return windowsCommand(windowsToast, JSON.stringify({ title, body, actions, url }));
   }
-  const clean = (text: string) => Array.from(text.replace(/[\u0000-\u001f\u007f]/g, " ")).slice(0, 256).join("");
-  const title = "o-pi 执行已完成"; const body = `${clean(notice.deviceName)} · ${clean(notice.title) || "未命名会话"}`;
-  if (platform === "linux" && isTermux(env)) {
-    return { program: "termux-notification", args: ["--title", title, "--content", body, "--id", "opi-hub-completion"] };
-  }
-  if (platform === "linux") {
+  if (platform === "linux" && !isTermux(env)) {
     if (!linuxDesktop(env)) return null;
-    return { program: "notify-send", args: ["--app-name=opi-hub", "--icon=dialog-information", "--urgency=normal", "--", title, escapeBody(body)] };
+    return { program: "notify-send", args: linuxCompletionArgs(notice) };
+  }
+  const { title, body } = completionText(notice);
+  if (platform === "linux") {
+    return { program: "termux-notification", args: ["--title", title, "--content", body, "--id", "opi-hub-completion"] };
   }
   if (platform === "darwin") return { program: "/usr/bin/osascript", args: ["-e", appleScript, "--", title, body] };
   if (platform === "win32") {
     if (env.SESSIONNAME?.toLowerCase() === "services") return null;
-    return windowsCommand(windowsToast, JSON.stringify({ title, body }));
+    const actions = completionLink ? [{ label: "查看结果", uri: completionLink }] : undefined;
+    return windowsCommand(windowsToast, JSON.stringify({ title, body, url: completionLink, actions }));
   }
   return null;
 }
@@ -130,29 +142,37 @@ function execute(command: NotificationCommand, signal?: AbortSignal, timeout = 1
     child.stdin?.on("error", () => {}); child.stdin?.end(command.input ?? "");
   });
 }
+async function supportsLinuxActions(program: string): Promise<boolean> {
+  return (await execute({ program, args: ["--help"] })).includes("--action");
+}
+async function linuxAction(command: NotificationCommand, signal: AbortSignal): Promise<string> {
+  return (await execute(command, signal, linuxActionWait + 5000)).trim();
+}
+async function openAfterClick(action: string, url: string, signal: AbortSignal, program = "xdg-open"): Promise<void> {
+  if ((action !== "default" && action !== "open") || signal.aborted) return;
+  // 只启动浏览器，不控制其生命周期。
+  await new Promise<void>((resolve, reject) => {
+    const opener = spawn(program, [url], { shell: false, detached: true, stdio: "ignore" });
+    opener.once("error", reject);
+    opener.once("spawn", () => { opener.unref(); resolve(); });
+  });
+}
+
 export async function createLinuxApprovalNotifier(): Promise<LinuxApprovalSender> {
   const env = process.env;
   if (!linuxDesktop(env) || isTermux(env)) throw new Error("Linux 通知审批需要本机桌面会话和用户 D-Bus，不支持 Termux");
   const program = await executable("notify-send");
-  if (!program || !(await execute({ program, args: ["--help"] })).includes("--action")) {
+  if (!program || !await supportsLinuxActions(program)) {
     throw new Error("Linux 通知审批需要支持 --action 的 notify-send");
   }
   return async ({ title, body, detail }, signal, url) => {
-    const wait = 120_000;
     const decisions = detail?.decisions ?? legacyDecisions;
     const actions = decisions.map((decision) => `--action=${decision}=${approvalLabels[decision]}`);
-    if (url) actions.push("--action=default=查看审批", "--action=open=查看审批");
-    const args = ["--app-name=opi-hub", "--icon=dialog-question", `--expire-time=${wait}`, ...actions, "--", title, escapeBody(body)];
-    const action = (await execute({ program, args }, signal, wait + 5000)).trim();
+    if (url) actions.push(...linuxOpenActions("查看审批"));
+    const args = ["--app-name=opi-hub", "--icon=dialog-question", `--expire-time=${linuxActionWait}`, ...actions, "--", title, escapeBody(body)];
+    const action = await linuxAction({ program, args }, signal);
     if ((action === "allow" || action === "deny") && decisions.includes(action)) return action;
-    if (url && (action === "default" || action === "open") && !signal.aborted) {
-      // 只启动浏览器，不控制其生命周期。URL 由节点配置的 Hub 地址和交互标识构造。
-      await new Promise<void>((resolve, reject) => {
-        const opener = spawn("xdg-open", [url], { shell: false, detached: true, stdio: "ignore" });
-        opener.once("error", reject);
-        opener.once("spawn", () => { opener.unref(); resolve(); });
-      });
-    }
+    if (url) await openAfterClick(action, url, signal);
   };
 }
 
@@ -167,9 +187,19 @@ export async function createSystemNotifier(): Promise<NotificationSender | null>
     if (uid === undefined || !await probe("/bin/launchctl", ["print", `gui/${uid}`])) return null;
   }
   if (platform === "win32") await execute({ ...windowsCommand(""), program });
-  return async (notice, signal) => {
-    const command = notificationCommand(platform, env, notice);
+  const send: NotificationSender = async (notice, signal, completionLink) => {
+    const command = notificationCommand(platform, env, notice, completionLink);
     if (!command) throw new Error("本机通知环境不可用");
     await execute({ ...command, program }, signal);
   };
+  if (plan.program === "notify-send") {
+    const opener = await executable("xdg-open");
+    if (opener && await supportsLinuxActions(program)) {
+      send.waitForCompletionClick = async (notice, signal, url) => {
+        const args = linuxCompletionArgs(notice, [`--expire-time=${linuxActionWait}`, ...linuxOpenActions("查看结果")]);
+        await openAfterClick(await linuxAction({ program, args }, signal), url, signal, opener);
+      };
+    }
+  }
+  return send;
 }

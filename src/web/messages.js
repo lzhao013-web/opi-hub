@@ -1,6 +1,9 @@
 import { create, sessionUrl } from "./management.js";
 
 const $ = (id) => document.getElementById(id);
+export function completionSessionUrl(notice) {
+  return sessionUrl(notice.deviceId, notice.file ? { path: notice.file } : { id: notice.sessionId });
+}
 export class MessageCenter {
   constructor(request, changed, openRun, authLost, refresh) {
     this.request = request; this.changed = changed; this.openRun = openRun; this.authLost = authLost; this.refresh = refresh; this.binding = false; this.generation = 0;
@@ -102,7 +105,7 @@ export class MessageCenter {
       const actions = create("div", "plan-actions");
       if (notice.runId) { const open = create("button", "secondary", "查看任务结果"); open.type = "button"; open.onclick = () => { void this.read(notice.id); this.openRun(notice.runId); }; actions.append(open); }
       else {
-        const open = create("a", "secondary", "查看会话 ↗"); open.href = sessionUrl(notice.deviceId, notice.file ? { path: notice.file } : { id: notice.sessionId }); open.target = "_blank"; open.rel = "noopener";
+        const open = create("a", "secondary", "查看会话 ↗"); open.href = completionSessionUrl(notice); open.target = "_blank"; open.rel = "noopener";
         open.onclick = () => { void this.read(notice.id); }; actions.append(open);
       }
       if (!notice.read) { const read = create("button", "text-button", "标为已读"); read.type = "button"; read.onclick = () => { void this.read(notice.id); }; actions.append(read); }
@@ -129,7 +132,7 @@ export class MessageCenter {
       const open = () => {
         void this.read(notice.id);
         if (notice.runId) this.openRun(notice.runId);
-        else window.open(sessionUrl(notice.deviceId, notice.file ? { path: notice.file } : { id: notice.sessionId }), "_blank", "noopener");
+        else window.open(completionSessionUrl(notice), "_blank", "noopener");
       };
       const toast = create("div", "notification-toast"); const view = create("button", "text-button", `${label}：本轮执行已完成`); view.type = "button"; view.onclick = () => { toast.remove(); open(); };
       const dismiss = create("button", "icon-button", "×"); dismiss.type = "button"; dismiss.setAttribute("aria-label", "关闭完成提醒"); dismiss.onclick = () => toast.remove(); toast.append(view, dismiss);

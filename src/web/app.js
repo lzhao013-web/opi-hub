@@ -4,7 +4,7 @@ import { Navigation, workspaceName } from "./navigation.js";
 import { WorkspaceViews } from "./views.js";
 import { CreateSessionView } from "./create-session.js";
 import { BackendControls, backendLabel } from "./backend.js";
-import { MessageCenter } from "./messages.js";
+import { completionSessionUrl, MessageCenter } from "./messages.js";
 import { ScheduleView } from "./schedules.js";
 
 const $ = (id) => {
@@ -26,7 +26,7 @@ const history = new HistoryStore(request, () => { if (authenticated) render(); }
 const navigation = new Navigation(selectScope);
 const backendControls = new BackendControls(request, refresh);
 const schedules = new ScheduleView(request);
-const messages = new MessageCenter(request, () => { if (authenticated) render(); }, (runId) => { scope = null; view = "schedules"; render(); void schedules.focusRun(runId); }, showLogin, refresh);
+const messages = new MessageCenter(request, () => { if (authenticated) render(); }, openRun, showLogin, refresh);
 const creator = new CreateSessionView(request, refresh, () => { scope = null; view = "interactions"; messages.open("pending"); render(); });
 const views = new WorkspaceViews(history, selectScope, creator);
 const text = (id, value) => { $(id).textContent = value; };
@@ -43,7 +43,7 @@ async function request(url, options = {}) {
 function showLogin() {
   authenticated = false; pendingRead++; clearTimeout(timer); management.clear(); history.clear(); views.clear(); navigation.clear(); creator.clear(); backendControls.clear(); schedules.clear(); messages.clear();
   overview = { devices: [], workspaces: [], sessions: [], interactions: [], creations: [] }; devices = []; scope = null; view = "overview";
-  approvalTarget = null; message("approval-location-status", "");
+  approvalTarget = null; message("approval-location-status", ""); message("completion-location-status", "");
   $("workspace").hidden = true; $("login").hidden = false;
   for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
   $("password").focus();
@@ -51,10 +51,39 @@ function showLogin() {
 async function showWorkspace() {
   authenticated = true; $("login").hidden = true; $("workspace").hidden = false;
   $("password").value = "";
-  messages.start(); openApprovalLink(); await refresh();
+  messages.start(); openDesktopLink(); await refresh();
 }
-function openApprovalLink() {
-  const params = new URLSearchParams(location.hash.slice(1));
+function openRun(runId) {
+  scope = null; view = "schedules"; render(); void schedules.focusRun(runId);
+}
+function openDesktopLink() {
+  const hash = location.hash;
+  const params = new URLSearchParams(hash.slice(1));
+  const completion = params.get("completion");
+  if (completion) {
+    void openCompletionLink(completion, hash);
+    return false;
+  }
+  return openApprovalLink(params);
+}
+async function openCompletionLink(id, hash) {
+  approvalTarget = null; scope = null; view = "interactions"; messages.open("notifications");
+  message("completion-location-status", "正在查找完成通知…"); render();
+  const current = () => authenticated && location.hash === hash && view === "interactions" && messages.tab === "notifications";
+  try {
+    const notices = await request("/_hub/notifications");
+    if (!current()) return;
+    const notice = notices.find(item => item.id === id);
+    if (!notice) {
+      message("completion-location-status", "这条完成通知已不在列表中，无法定位原结果。");
+      return;
+    }
+    message("completion-location-status", "");
+    if (notice.runId) openRun(notice.runId);
+    else location.replace(completionSessionUrl(notice));
+  } catch (error) { if (current()) message("completion-location-status", error.message); }
+}
+function openApprovalLink(params) {
   const deviceId = params.get("device"); const sessionId = params.get("session"); const dialogId = params.get("approval");
   if (!deviceId || !sessionId || !dialogId) return false;
   approvalTarget = { deviceId, sessionId, dialogId };
@@ -217,7 +246,7 @@ let theme = localStorage.getItem("opi-hub.theme") || "system";
 function applyTheme() { document.documentElement.dataset.theme = theme; text("theme", labels[theme] || labels.system); }
 applyTheme();
 $("theme").addEventListener("click", () => { theme = themes[(themes.indexOf(theme) + 1) % themes.length]; localStorage.setItem("opi-hub.theme", theme); applyTheme(); });
-window.addEventListener("hashchange", () => { if (authenticated && openApprovalLink()) void refresh(); });
+window.addEventListener("hashchange", () => { if (authenticated && openDesktopLink()) void refresh(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && authenticated) void refresh(); else clearTimeout(timer); });
 try { const me = await request("/_hub/me"); if (me.authenticated) await showWorkspace(); else showLogin(); }
 catch (error) { showLogin(); message("login-error", error.message); }

@@ -13,6 +13,7 @@ export class LocalNotifications {
   private tail = Promise.resolve();
   private pending = 0;
   private waitingForAction = 0;
+  private waitingForCompletionClick = 0;
   private log: (message: string) => void;
   constructor(enabled: boolean, log: (message: string) => void, factory: () => Promise<NotificationSender | null> = createSystemNotifier) {
     this.log = log;
@@ -28,17 +29,27 @@ export class LocalNotifications {
     if (this.seen.size > 100) { const oldest = this.seen.values().next().value; if (oldest !== undefined) this.seen.delete(oldest); }
     return true;
   }
-  async receive(notice: DesktopNotice): Promise<void> {
-    if (!await this.ready || this.controller.signal.aborted || !this.remember(notice.id)) return;
+  async receive(notice: DesktopNotice, completionLink?: string): Promise<void> {
+    const signal = this.controller.signal;
+    if (!await this.ready || signal.aborted || !this.remember(notice.id)) return;
+    const sender = this.sender;
+    if (completionLink && !("receiverId" in notice) && sender?.waitForCompletionClick && this.waitingForCompletionClick < 8) {
+      // 一个通知等待点击时，另一个通知仍可发送。等候已满则继续提供普通提醒。
+      this.waitingForCompletionClick++;
+      try { await sender.waitForCompletionClick(notice, signal, completionLink); }
+      catch (error) { this.sendFailed(error); }
+      finally { this.waitingForCompletionClick--; }
+      return;
+    }
     if (this.pending >= 32) { this.log("本机通知队列已满，本条不弹出，可在消息中心查看"); return; }
     this.pending++;
-    const sender = this.sender;
     this.tail = this.tail.then(async () => {
-      if (!this.controller.signal.aborted && sender) await sender(notice, this.controller.signal);
-    }).catch((error: unknown) => {
-      if (!this.controller.signal.aborted) this.log(`本机通知发送失败：${detail(error)}，未自动重试，可在消息中心查看`);
-    }).finally(() => { this.pending--; });
+      if (!signal.aborted && sender) await sender(notice, signal, completionLink);
+    }).catch((error: unknown) => this.sendFailed(error)).finally(() => { this.pending--; });
     await this.tail;
+  }
+  private sendFailed(error: unknown): void {
+    if (!this.controller.signal.aborted) this.log(`本机通知发送失败：${detail(error)}，未自动重试，可在消息中心查看`);
   }
   async receiveLinuxApproval(notice: NodeApprovalNotice, send: LinuxApprovalSender, connection: AbortSignal, url?: string) {
     if (!await this.ready || connection.aborted || this.controller.signal.aborted || !this.remember(notice.id)) return;

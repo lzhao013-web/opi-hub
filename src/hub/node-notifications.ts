@@ -108,7 +108,7 @@ export class NodeNotifications {
   }
   close(): void { this.stop(); this.receivers.clear(); }
   private sendStatus(socket: WebSocket, active: boolean): void {
-    void json(socket, { type: "notificationSubscription", active } satisfies NotificationSubscriptionStatus).catch(() => socket.terminate());
+    void json(socket, { type: "notificationSubscription", active, completionLinks: true } satisfies NotificationSubscriptionStatus).catch(() => socket.terminate());
   }
   private reconcile(id: string, receiver: Receiver): void {
     const active = this.status(id);

@@ -13,10 +13,15 @@ export interface HubNotice extends CompletionNotice { deviceId: string; read: bo
 
 export const isNotificationDestination = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value);
 export interface NotificationSubscription { type: "subscribeNotifications"; enabled: boolean; approvals?: true; approvalLinks?: true }
-export interface NotificationSubscriptionStatus { type: "notificationSubscription"; active: boolean }
+export interface NotificationSubscriptionStatus { type: "notificationSubscription"; active: boolean; completionLinks?: true }
 /** 节点弹窗只需要来源和标题，不下发正文、文件路径或浏览器凭据。 */
 export interface NodeCompletionNotice { id: string; deviceId: string; deviceName: string; title: string; completedAt: string }
 export interface NodeCompletionMessage { type: "completionNotification"; notice: NodeCompletionNotice }
+export function completionUrl(origin: string, id: string): string {
+  const url = new URL("/", origin);
+  url.hash = new URLSearchParams({ completion: id }).toString();
+  return url.href;
+}
 export const MAX_APPROVAL_BODY = 320;
 export type ApprovalDecision = "allow" | "deny";
 export interface ApprovalLocation { deviceId: string; sessionId: string; dialogId: string }
@@ -48,7 +53,9 @@ export function isNodeCompletionNotice(value: unknown): value is NodeCompletionN
 }
 export function isNodeNotificationMessage(value: unknown): value is NotificationSubscriptionStatus | NodeCompletionMessage | NodeApprovalMessage {
   if (!object(value)) return false;
-  if (value.type === "notificationSubscription") return typeof value.active === "boolean";
+  if (value.type === "notificationSubscription") {
+    return typeof value.active === "boolean" && (value.completionLinks === undefined || value.completionLinks === true);
+  }
   if (value.type === "completionNotification") return isNodeCompletionNotice(value.notice);
   const notice = value.notice;
   return value.type === "approvalNotification" && object(notice) && isApprovalId(notice.id) &&

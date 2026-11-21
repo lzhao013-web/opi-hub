@@ -75,6 +75,39 @@ async function planRun(page: Page, deviceId: string, name: string, prompt: strin
   await page.request.delete(`/_hub/schedules/${entry.id}`, { headers }); return run;
 }
 
+test("系统完成链接登录后打开原会话，计划任务定位结果，失效链接不乱跳", async ({ page }, info) => {
+  await login(page);
+  const id = await device(page);
+  const origin = new URL(page.url()).origin;
+  const link = (noticeId: string) => `${origin}/#${new URLSearchParams({ completion: noticeId })}`;
+  const allNotices = async () => {
+    const value: unknown = await (await page.request.get("/_hub/notifications")).json();
+    if (!Array.isArray(value)) throw new Error("缺少完成通知");
+    return value as unknown[];
+  };
+  const previous = new Set((await allNotices()).flatMap(x => object(x) ? [x.id] : []));
+  await action(page, id, "runtime-1", "验证系统完成链接");
+  let ordinary = "";
+  await expect.poll(async () => {
+    const notice = (await allNotices()).find(x => object(x) && x.deviceId === id && x.sessionId === "runtime-1" && !previous.has(x.id));
+    if (object(notice) && typeof notice.id === "string") ordinary = notice.id;
+    return Boolean(ordinary);
+  }).toBe(true);
+  const run = await planRun(page, id, `系统完成链接 ${info.project.name}`, "验证计划任务跳转");
+  const planned = `${id}:task:${run.id}`;
+  await expect.poll(async () => (await allNotices()).some(x => object(x) && x.id === planned)).toBe(true);
+  await page.getByRole("button", { name: "退出" }).click();
+  await page.goto(link(ordinary));
+  await page.getByLabel("中心密码").fill("test-password-1234");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.locator("#selected-session")).toHaveText("runtime-1");
+
+  await page.goto(link(planned));
+  await expect(page.locator(`.run-card[data-run-id="${run.id}"]`)).toHaveClass(/highlighted-run/);
+  await page.goto(link("expired-completion"));
+  await expect(page.getByRole("status").filter({ hasText: "这条完成通知已不在列表中" })).toBeVisible();
+});
+
 test("消息中心分区、前台目标抑制与跨标签通知去重，别的会话在前台不漏报", async ({ page, context }) => {
   test.setTimeout(45_000);
   await context.addInitScript(() => {

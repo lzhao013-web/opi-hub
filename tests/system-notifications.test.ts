@@ -2,6 +2,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import childProcess, { ChildProcess, type ExecFileException, type ExecFileOptions } from "node:child_process";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { PassThrough } from "node:stream";
 import { createLinuxApprovalNotifier, createSystemNotifier, notificationCommand } from "../src/node/system-notifications.ts";
@@ -45,13 +46,17 @@ function windowsEnvironment(t: TestContext, result: (call: Invocation) => Result
   return mockCommands(t, result);
 }
 
-test("Linux 通知审批使用 notify-send 的按钮输出，关闭通知不提交决定", async (t) => {
+function setLinuxDesktop(t: TestContext) {
   const saved = { ...process.env };
   for (const key of ["DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "TERMUX_VERSION", "PREFIX"]) {
     t.after(() => { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; });
   }
   process.env.DISPLAY = ":1"; process.env.DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/1/bus";
   delete process.env.TERMUX_VERSION; delete process.env.PREFIX;
+}
+
+test("Linux 通知审批使用 notify-send 的按钮输出，关闭通知不提交决定", async (t) => {
+  setLinuxDesktop(t);
   let output = "旧版 notify-send";
   const calls = mockCommands(t, () => ({ ...success, stdout: output }));
   await assert.rejects(createLinuxApprovalNotifier(), /需要支持 --action/);
@@ -92,6 +97,39 @@ test("Linux 通知审批使用 notify-send 的按钮输出，关闭通知不提�
   assert.ok(!viewOnly?.args.some(arg => arg.startsWith("--action=allow") || arg.startsWith("--action=deny")));
 });
 
+test("Linux 完成通知有动作时只在点击后打开链接，旧版仍可发普通通知", async (t) => {
+  setLinuxDesktop(t);
+  const platform = Object.getOwnPropertyDescriptor(process, "platform"); assert.ok(platform);
+  Object.defineProperty(process, "platform", { value: "linux" });
+  t.after(() => { Object.defineProperty(process, "platform", platform); });
+  let output = "";
+  const calls = mockCommands(t, () => ({ ...success, stdout: output }));
+  const opened: string[][] = [];
+  t.mock.method(childProcess, "spawn", (program: string, args: string[]) => {
+    opened.push([path.basename(program), ...args]);
+    const child = new ChildProcess();
+    t.mock.method(child, "unref", () => {});
+    queueMicrotask(() => child.emit("spawn"));
+    return child;
+  });
+  syncBuiltinESMExports();
+  const legacy = await createSystemNotifier(); assert.ok(legacy);
+  assert.equal(legacy.waitForCompletionClick, undefined);
+  const url = "https://hub.example.test/#completion=done%3A1";
+  const signal = new AbortController().signal;
+  await legacy(notice, signal, url);
+  assert.ok(!calls.at(-1)?.args.some(arg => arg.startsWith("--action")));
+  output = "  -A, --action=[NAME=]Text...";
+  const sender = await createSystemNotifier(); assert.ok(sender?.waitForCompletionClick);
+  output = "";
+  await sender.waitForCompletionClick(notice, signal, url);
+  assert.deepEqual(opened, []);
+  assert.ok(calls.at(-1)?.args.includes("--action=open=查看结果"));
+  output = "open\n";
+  await sender.waitForCompletionClick(notice, signal, url);
+  assert.deepEqual(opened, [["xdg-open", url]]);
+});
+
 test("Windows 订阅前验证已注册应用和通知权限，探测不发送弹窗", async (t) => {
   const calls = windowsEnvironment(t);
   const sender = await createSystemNotifier(); assert.ok(sender);
@@ -108,6 +146,12 @@ test("Windows 订阅前验证已注册应用和通知权限，探测不发送弹
   assert.ok(!script(sent.args).includes(notice.title)); assert.ok(script(sent.args).includes(".Show("));
   assert.deepEqual(JSON.parse(sent.input), { title: "o-pi 执行已完成", body: `${notice.deviceName} · ${notice.title}` });
   assert.equal(sent.options.signal, signal); assert.equal(sent.options.windowsHide, true); assert.equal(sent.options.shell, false);
+  const url = "https://hub.example.test/#completion=done%3A1";
+  await sender(notice, signal, url);
+  assert.deepEqual(JSON.parse(calls[2]?.input ?? ""), {
+    title: "o-pi 执行已完成", body: `${notice.deviceName} · ${notice.title}`, url,
+    actions: [{ label: "查看结果", uri: url }],
+  });
 });
 
 test("Windows 缺失注册或系统禁用通知时不宣告可用，并保留诊断原因", async (t) => {

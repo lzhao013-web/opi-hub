@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { validateNodeConfig } from "../src/node/config.ts";
 import { LocalNotifications } from "../src/node/notifications.ts";
-import { notificationCommand } from "../src/node/system-notifications.ts";
+import { notificationCommand, type NotificationSender } from "../src/node/system-notifications.ts";
 import { isNodeCompletionNotice, isNodeNotificationMessage, type NodeCompletionNotice } from "../src/shared/notifications.ts";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -74,6 +74,28 @@ test("Linux 等待审批按钮时不阻塞其他审批或完成通知，断线�
     assert.equal(await first, undefined);
     assert.equal(wait.aborted, true);
   } finally { connection.abort(); local.close(); }
+});
+
+test("完成通知等待点击不阻塞后续提醒，等待额度用完时仍会弹普通通知", { timeout: 5000 }, async () => {
+  const waiting: string[] = []; const plain: string[] = [];
+  const start = Promise.withResolvers<void>();
+  const send: NotificationSender = async (item) => { plain.push(item.id); };
+  send.waitForCompletionClick = async (item, signal, url) => {
+    assert.match(url, /#completion=/);
+    waiting.push(item.id);
+    if (waiting.length === 8) start.resolve();
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+  };
+  const local = new LocalNotifications(true, () => {}, async () => send);
+  try {
+    const jobs = Array.from({ length: 8 }, (_, index) => local.receive(notice(String(index)), `https://hub.example/#completion=${index}`));
+    await start.promise;
+    await local.receive(notice("overflow"), "https://hub.example/#completion=overflow");
+    assert.deepEqual(plain, ["overflow"]);
+    assert.equal(waiting.length, 8);
+    local.close();
+    await Promise.all(jobs);
+  } finally { local.close(); }
 });
 
 test("本机通知队列有界且串行，关闭会取消尚未发送的弹窗", async () => {
