@@ -4,7 +4,7 @@ import { isPlan, isRun, type ScheduleRun } from "../../src/shared/schedules.ts";
 import { MARKDOWN_REPLY } from "../markdown-fixture.ts";
 import { WebSocket as NodeSocket } from "ws";
 import { connected } from "../../src/shared/sockets.ts";
-import { isNodeNotificationMessage, type NodeCompletionNotice } from "../../src/shared/notifications.ts";
+import { approvalUrl, isNodeNotificationMessage, type NodeCompletionNotice } from "../../src/shared/notifications.ts";
 
 async function login(page: Page) {
   await page.goto("/"); await page.getByLabel("中心密码").fill("test-password-1234"); await page.getByRole("button", { name: "登录", exact: true }).click();
@@ -16,6 +16,29 @@ async function device(page: Page): Promise<string> {
   const entry: unknown = value.devices.find((item: unknown) => object(item) && item.name === "开发台式机");
   if (!object(entry) || typeof entry.id !== "string") throw new Error("缺少设备身份"); return entry.id;
 }
+test("通知深链接登录后定位原审批，过期链接提示且不提交审批", async ({ page }) => {
+  await login(page);
+  const deviceId = await device(page);
+  const state: unknown = await (await page.request.get("/_hub/overview")).json();
+  if (!object(state) || !Array.isArray(state.interactions)) throw new Error("缺少待处理审批");
+  const target: unknown = state.interactions.find((item: unknown) => object(item) && item.deviceId === deviceId);
+  if (!object(target) || typeof target.id !== "string" || typeof target.sessionId !== "string") throw new Error("缺少目标审批");
+  const origin = new URL(page.url()).origin;
+  const url = approvalUrl(origin, { deviceId, sessionId: target.sessionId, dialogId: target.id });
+  const card = page.locator(`[data-dialog-id="${target.id}"][data-device-id="${deviceId}"]`);
+  await page.getByRole("button", { name: "退出" }).click();
+  let responses = 0;
+  page.on("request", request => { if (request.url().endsWith("/_hub/respond")) responses++; });
+  await page.goto(url);
+  await page.getByLabel("中心密码").fill("test-password-1234");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "消息中心", exact: true })).toBeVisible();
+  await expect(card).toBeFocused();
+  await page.goto(approvalUrl(origin, { deviceId, sessionId: target.sessionId, dialogId: "missing" }));
+  await expect(page.getByRole("status").filter({ hasText: "这条审批不再待处理" })).toBeVisible();
+  expect(responses).toBe(0);
+});
+
 async function action(page: Page, deviceId: string, sessionId: string, text: string): Promise<void> {
   await page.evaluate(async ({ deviceId, sessionId, text }) => {
     await new Promise<void>((resolve, reject) => {

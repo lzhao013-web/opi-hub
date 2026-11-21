@@ -2,12 +2,14 @@ import { execFile, spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import type { NodeApprovalNotice, NodeCompletionNotice, NotificationAnswer } from "../shared/notifications.ts";
+import type { ApprovalDecision, NodeApprovalNotice, NodeCompletionNotice } from "../shared/notifications.ts";
 import { approvalClickUri } from "./windows-approval-clicks.ts";
 
-export type DesktopNotice = NodeCompletionNotice | (NodeApprovalNotice & { receiverId: string });
+export type DesktopNotice = NodeCompletionNotice | (NodeApprovalNotice & { receiverId: string; url?: string });
 export type NotificationSender = (notice: DesktopNotice, signal: AbortSignal) => Promise<void>;
-export type LinuxApprovalSender = (notice: NodeApprovalNotice, signal: AbortSignal) => Promise<NotificationAnswer["decision"] | undefined>;
+export type LinuxApprovalSender = (notice: NodeApprovalNotice, signal: AbortSignal, url?: string) => Promise<ApprovalDecision | undefined>;
+const approvalLabels = { allow: "仅本次允许", deny: "拒绝" } as const;
+const legacyDecisions = ["allow", "deny"] as const;
 export interface NotificationCommand { program: string; args: string[]; input?: string }
 const appleScript = 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run';
 // 探测和发送共用注册身份与权限检查，不能把能启动 PowerShell 当作通知可用。
@@ -37,6 +39,10 @@ $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text></text><text
 $text = $xml.GetElementsByTagName('text')
 $text.Item(0).AppendChild($xml.CreateTextNode([string]$data.title)) | Out-Null
 $text.Item(1).AppendChild($xml.CreateTextNode([string]$data.body)) | Out-Null
+if ($data.url) {
+  $xml.DocumentElement.SetAttribute('launch', [string]$data.url)
+  $xml.DocumentElement.SetAttribute('activationType', 'protocol')
+}
 if ($data.actions) {
   $text.Item(1).SetAttribute('hint-maxLines', '4')
   $actions = $xml.CreateElement('actions')
@@ -75,12 +81,12 @@ const escapeBody = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<
 export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: DesktopNotice): NotificationCommand | null {
   if ("receiverId" in notice) {
     if (platform !== "win32" || env.SESSIONNAME?.toLowerCase() === "services") return null;
-    const { title, body, receiverId, id } = notice;
-    const actions = [
-      { label: "仅本次允许", uri: approvalClickUri(receiverId, id, "allow") },
-      { label: "拒绝", uri: approvalClickUri(receiverId, id, "deny") },
-    ];
-    return windowsCommand(windowsToast, JSON.stringify({ title, body, actions }));
+    const { title, body, receiverId, id, detail, url } = notice;
+    const actions: { label: string; uri: string }[] = (detail?.decisions ?? legacyDecisions).map((decision) => ({
+      label: approvalLabels[decision], uri: approvalClickUri(receiverId, id, decision),
+    }));
+    if (url) actions.push({ label: "查看审批", uri: url });
+    return windowsCommand(windowsToast, JSON.stringify({ title, body, actions, url }));
   }
   const clean = (text: string) => Array.from(text.replace(/[\u0000-\u001f\u007f]/g, " ")).slice(0, 256).join("");
   const title = "o-pi 执行已完成"; const body = `${clean(notice.deviceName)} · ${clean(notice.title) || "未命名会话"}`;
@@ -131,14 +137,22 @@ export async function createLinuxApprovalNotifier(): Promise<LinuxApprovalSender
   if (!program || !(await execute({ program, args: ["--help"] })).includes("--action")) {
     throw new Error("Linux 通知审批需要支持 --action 的 notify-send");
   }
-  return async ({ title, body }, signal) => {
+  return async ({ title, body, detail }, signal, url) => {
     const wait = 120_000;
-    const args = [
-      "--app-name=opi-hub", "--icon=dialog-question", `--expire-time=${wait}`,
-      "--action=allow=仅本次允许", "--action=deny=拒绝", "--", title, escapeBody(body),
-    ];
+    const decisions = detail?.decisions ?? legacyDecisions;
+    const actions = decisions.map((decision) => `--action=${decision}=${approvalLabels[decision]}`);
+    if (url) actions.push("--action=default=查看审批", "--action=open=查看审批");
+    const args = ["--app-name=opi-hub", "--icon=dialog-question", `--expire-time=${wait}`, ...actions, "--", title, escapeBody(body)];
     const action = (await execute({ program, args }, signal, wait + 5000)).trim();
-    if (action === "allow" || action === "deny") return action;
+    if ((action === "allow" || action === "deny") && decisions.includes(action)) return action;
+    if (url && (action === "default" || action === "open") && !signal.aborted) {
+      // 只启动浏览器，不控制其生命周期。URL 由节点配置的 Hub 地址和交互标识构造。
+      await new Promise<void>((resolve, reject) => {
+        const opener = spawn("xdg-open", [url], { shell: false, detached: true, stdio: "ignore" });
+        opener.once("error", reject);
+        opener.once("spawn", () => { opener.unref(); resolve(); });
+      });
+    }
   };
 }
 

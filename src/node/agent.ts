@@ -9,7 +9,7 @@ import { isRestartBackend, type BackendReply, type NodeReport } from "../shared/
 import { validateNodeConfig } from "./config.ts";
 import { NodeRuntime } from "./runtime.ts";
 import { isTaskCommand, type TaskReply } from "../shared/tasks.ts";
-import { isNodeNotificationMessage, type NotificationAnswer, type NotificationSubscription } from "../shared/notifications.ts";
+import { approvalUrl, isNodeNotificationMessage, type NotificationAnswer, type NotificationSubscription } from "../shared/notifications.ts";
 import { LocalNotifications } from "./notifications.ts";
 import { createSystemNotifier, type LinuxApprovalSender, type NotificationSender } from "./system-notifications.ts";
 import type { WindowsApprovalClicks } from "./windows-approval-clicks.ts";
@@ -72,10 +72,13 @@ export function startNode(input: unknown, log: (message: string) => void = conso
             if (isNodeNotificationMessage(request)) {
               if (request.type === "completionNotification") void notifications.receive(request.notice);
               else if (request.type === "approvalNotification") {
-                if (windowsClicks) void notifications.receive({ ...request.notice, receiverId: windowsClicks.receiverId });
-                else if (linuxClicks) void notifications.receiveLinuxApproval(request.notice, linuxClicks.send, linuxClicks.connection.signal).then((decision) => {
-                  if (decision) sendAnswer(control, { type: "notificationAnswer", id: request.notice.id, decision });
-                });
+                const url = request.notice.detail ? approvalUrl(config.hub, request.notice.detail) : undefined;
+                if (windowsClicks) void notifications.receive({ ...request.notice, receiverId: windowsClicks.receiverId, url });
+                else if (linuxClicks) {
+                  void notifications.receiveLinuxApproval(request.notice, linuxClicks.send, linuxClicks.connection.signal, url).then((decision) => {
+                    if (decision) sendAnswer(control, { type: "notificationAnswer", id: request.notice.id, decision });
+                  });
+                }
               } else if (config.notifications) log(request.active ? "已订阅中心系统通知" : "系统通知未授权：请在消息中心绑定本机节点");
               return;
             }
@@ -147,7 +150,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
         currentControl = control; await json(control, { type: "management", value: runtime.snapshot }); await report(control);
         if (await notifications.ready) {
           const subscription: NotificationSubscription = { type: "subscribeNotifications", enabled: true };
-          if (approvals) subscription.approvals = true;
+          if (approvals) { subscription.approvals = true; subscription.approvalLinks = true; }
           await json(control, subscription);
         }
         if (first) { first = false; ready.resolve(); }

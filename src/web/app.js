@@ -20,6 +20,7 @@ let removing = null;
 let authenticated = false;
 let timer;
 let pendingRead = 0;
+let approvalTarget = null;
 const management = new ManagementView(request, refresh);
 const history = new HistoryStore(request, () => { if (authenticated) render(); });
 const navigation = new Navigation(selectScope);
@@ -42,6 +43,7 @@ async function request(url, options = {}) {
 function showLogin() {
   authenticated = false; pendingRead++; clearTimeout(timer); management.clear(); history.clear(); views.clear(); navigation.clear(); creator.clear(); backendControls.clear(); schedules.clear(); messages.clear();
   overview = { devices: [], workspaces: [], sessions: [], interactions: [], creations: [] }; devices = []; scope = null; view = "overview";
+  approvalTarget = null; message("approval-location-status", "");
   $("workspace").hidden = true; $("login").hidden = false;
   for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
   $("password").focus();
@@ -49,7 +51,16 @@ function showLogin() {
 async function showWorkspace() {
   authenticated = true; $("login").hidden = true; $("workspace").hidden = false;
   $("password").value = "";
-  messages.start(); await refresh();
+  messages.start(); openApprovalLink(); await refresh();
+}
+function openApprovalLink() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const deviceId = params.get("device"); const sessionId = params.get("session"); const dialogId = params.get("approval");
+  if (!deviceId || !sessionId || !dialogId) return false;
+  approvalTarget = { deviceId, sessionId, dialogId };
+  scope = null; view = "interactions"; messages.open("pending");
+  message("approval-location-status", "正在查找审批…"); render();
+  return true;
 }
 async function refresh() {
   clearTimeout(timer);
@@ -59,6 +70,13 @@ async function refresh() {
     const value = await request("/_hub/overview");
     if (sequence !== pendingRead || !authenticated) return;
     overview = value; devices = value.devices; history.reconcile(devices); message("workspace-error", ""); text("center-status", "中心已连接"); $("center-dot").classList.add("online"); render();
+    if (approvalTarget) {
+      const { deviceId, sessionId, dialogId } = approvalTarget;
+      approvalTarget = null;
+      const onPending = view === "interactions" && messages.tab === "pending";
+      const missing = onPending && !management.focusInteraction(deviceId, sessionId, dialogId);
+      message("approval-location-status", missing ? "这条审批不再待处理，或来源设备暂时不可用。" : "");
+    }
   } catch (error) { if (sequence === pendingRead && authenticated) { message("workspace-error", error.message); text("center-status", "中心连接异常"); $("center-dot").classList.remove("online"); } }
   finally { if (authenticated && !document.hidden) timer = setTimeout(refresh, 2000); }
 }
@@ -199,6 +217,7 @@ let theme = localStorage.getItem("opi-hub.theme") || "system";
 function applyTheme() { document.documentElement.dataset.theme = theme; text("theme", labels[theme] || labels.system); }
 applyTheme();
 $("theme").addEventListener("click", () => { theme = themes[(themes.indexOf(theme) + 1) % themes.length]; localStorage.setItem("opi-hub.theme", theme); applyTheme(); });
+window.addEventListener("hashchange", () => { if (authenticated && openApprovalLink()) void refresh(); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && authenticated) void refresh(); else clearTimeout(timer); });
 try { const me = await request("/_hub/me"); if (me.authenticated) await showWorkspace(); else showLogin(); }
 catch (error) { showLogin(); message("login-error", error.message); }

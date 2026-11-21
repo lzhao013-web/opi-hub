@@ -40,13 +40,13 @@ export class LocalNotifications {
     }).finally(() => { this.pending--; });
     await this.tail;
   }
-  async receiveLinuxApproval(notice: NodeApprovalNotice, send: LinuxApprovalSender, connection: AbortSignal) {
+  async receiveLinuxApproval(notice: NodeApprovalNotice, send: LinuxApprovalSender, connection: AbortSignal, url?: string) {
     if (!await this.ready || connection.aborted || this.controller.signal.aborted || !this.remember(notice.id)) return;
     if (this.waitingForAction >= 8) { this.log("本机正在等待的审批通知过多，可在消息中心处理"); return; }
     // 等待桌面按钮使用独立的并发额度，不占用普通通知队列。
     const signal = AbortSignal.any([this.controller.signal, connection]);
     this.waitingForAction++;
-    try { return await send(notice, signal); }
+    try { return await send(notice, signal, url); }
     catch (error) {
       if (!signal.aborted) this.log(`本机审批通知失败：${detail(error)}，可在消息中心处理`);
     } finally { this.waitingForAction--; }

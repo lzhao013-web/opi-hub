@@ -99,28 +99,43 @@ test("Linux 通知按钮的决定经中心提交到原设备，无决定不消�
   let receiver: ReturnType<typeof startNode> | undefined;
   try {
     const entry = await add(env.hub.url, env.cookie, "Linux 接收端");
-    const received: string[] = [];
+    const received: { body: string; decisions: string[]; url?: string }[] = [];
     receiver = startNode({ ...managedConfig(entry.config, env.fakeB.url, env.directory), notifications: true }, () => {}, async () => async () => {}, {
       kind: "linux",
-      send: async (notice) => {
-        received.push(notice.body);
-        if (notice.body.startsWith("echo approval-allow")) return "allow";
-        if (notice.body.startsWith("echo approval-deny")) return "deny";
+      send: async (notice, _signal, url) => {
+        received.push({ body: notice.body, decisions: notice.detail?.decisions ?? [], url });
+        if (url?.includes("approval=allow") || url?.includes("approval=confirm")) return "allow";
+        if (url?.includes("approval=deny")) return "deny";
       },
     });
     await receiver.ready;
     const bind = await fetch(env.hub.url + "/_hub/notifications/receiver", { method: "POST", headers: { Cookie: env.cookie, Origin: env.hub.url, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: entry.id, destination: crypto.randomUUID() }) });
     assert.equal(bind.status, 200);
     await until(() => subscribed(env.hub.url, env.cookie, entry.id));
-    env.fakeA.setDialogs("runtime-1", ["dismiss", "allow", "deny"].map((id) => ({
-      id, kind: "bashApproval", title: "命令审批", deadline: null, approval: { command: `echo approval-${id}`, cwd: "/demo", items: [] },
-      options: ["Allow once", "Deny"].map((value) => ({ label: value, value })),
-    })));
-    await until(() => received.length === 3 && env.fakeA.answers.length >= 2);
+    env.fakeA.setDialogs("runtime-1", [
+      ...["dismiss", "allow", "deny"].map((id) => ({
+        id, kind: "bashApproval", title: "命令审批", deadline: null,
+        approval: { command: id === "allow" ? `echo first\necho ${"x".repeat(500)}` : `echo approval-${id}`, cwd: "/demo", items: [] },
+        options: ["Allow once", "Deny"].map((value) => ({ label: value, value })),
+      })),
+      { id: "confirm", kind: "confirm", title: "确认项目", message: "是否继续？", deadline: null },
+      { id: "secret", kind: "secret", title: "输入密钥", initial: "secret", placeholder: "", deadline: null },
+    ]);
+    const fromSource = () => received.filter(x => x.url?.includes(`device=${env.a.id}`) && x.url.includes("session=runtime-1"));
+    await until(() => fromSource().length >= 4 && env.fakeA.answers.length >= 2);
+    assert.equal(fromSource().length, 4);
+    const long = received.find(x => x.url?.includes("approval=allow"));
+    assert.ok(long?.url);
+    assert.equal(new URL(long.url).origin, env.hub.url);
+    assert.match(long.url, new RegExp(`device=${env.a.id}`));
+    assert.match(long.body, /内容已截断/);
+    assert.ok(long.body.length <= 320);
+    assert.deepEqual(long.decisions, ["allow", "deny"]);
+    assert.deepEqual(received.find(x => x.url?.includes("approval=confirm"))?.decisions, []);
     assert.deepEqual(env.fakeA.answers.map(({ dialogId, value }) => [dialogId, value]).sort(), [["allow", "Allow once"], ["deny", "Deny"]]);
     const overview: unknown = await (await fetch(env.hub.url + "/_hub/overview", { headers: { Cookie: env.cookie } })).json();
     assert.ok(object(overview) && Array.isArray(overview.interactions));
-    assert.ok(overview.interactions.some((item: unknown) => object(item) && item.deviceId === env.a.id && item.id === "dismiss"));
+    for (const id of ["dismiss", "confirm", "secret"]) assert.ok(overview.interactions.some((item: unknown) => object(item) && item.deviceId === env.a.id && item.id === id));
     assert.equal(env.fakeB.answers.length, 0);
   } finally { await receiver?.close(); await env.close(); }
 });

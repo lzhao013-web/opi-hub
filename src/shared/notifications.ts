@@ -12,21 +12,33 @@ export function isCompletionNotice(value: unknown): value is CompletionNotice {
 export interface HubNotice extends CompletionNotice { deviceId: string; read: boolean }
 
 export const isNotificationDestination = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value);
-export interface NotificationSubscription { type: "subscribeNotifications"; enabled: boolean; approvals?: true }
+export interface NotificationSubscription { type: "subscribeNotifications"; enabled: boolean; approvals?: true; approvalLinks?: true }
 export interface NotificationSubscriptionStatus { type: "notificationSubscription"; active: boolean }
 /** 节点弹窗只需要来源和标题，不下发正文、文件路径或浏览器凭据。 */
 export interface NodeCompletionNotice { id: string; deviceId: string; deviceName: string; title: string; completedAt: string }
 export interface NodeCompletionMessage { type: "completionNotification"; notice: NodeCompletionNotice }
 export const MAX_APPROVAL_BODY = 320;
-export interface NodeApprovalNotice { id: string; title: string; body: string }
+export type ApprovalDecision = "allow" | "deny";
+export interface ApprovalLocation { deviceId: string; sessionId: string; dialogId: string }
+export interface NodeApprovalNotice {
+  id: string; title: string; body: string;
+  detail?: ApprovalLocation & { decisions: ApprovalDecision[] };
+}
+export function approvalUrl(origin: string, target: ApprovalLocation): string {
+  const url = new URL("/", origin);
+  url.hash = new URLSearchParams({ approval: target.dialogId, device: target.deviceId, session: target.sessionId }).toString();
+  return url.href;
+}
 export interface NodeApprovalMessage { type: "approvalNotification"; notice: NodeApprovalNotice }
-export interface NotificationAnswer { type: "notificationAnswer"; id: string; decision: "allow" | "deny" }
+export interface NotificationAnswer { type: "notificationAnswer"; id: string; decision: ApprovalDecision }
 export const isApprovalId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 export function isNotificationAnswer(value: unknown): value is NotificationAnswer {
   return object(value) && value.type === "notificationAnswer" && isApprovalId(value.id) && (value.decision === "allow" || value.decision === "deny");
 }
 export function isNotificationSubscription(value: unknown): value is NotificationSubscription {
-  return object(value) && value.type === "subscribeNotifications" && typeof value.enabled === "boolean" && (value.approvals === undefined || value.approvals === true);
+  return object(value) && value.type === "subscribeNotifications" && typeof value.enabled === "boolean" &&
+    (value.approvals === undefined || value.approvals === true) &&
+    (value.approvalLinks === undefined || value.approvalLinks === true && value.approvals === true);
 }
 export function isNodeCompletionNotice(value: unknown): value is NodeCompletionNotice {
   const text = (value: unknown, limit: number): value is string => typeof value === "string" && value.length <= limit && !value.includes("\0");
@@ -40,5 +52,11 @@ export function isNodeNotificationMessage(value: unknown): value is Notification
   if (value.type === "completionNotification") return isNodeCompletionNotice(value.notice);
   const notice = value.notice;
   return value.type === "approvalNotification" && object(notice) && isApprovalId(notice.id) &&
-    typeof notice.title === "string" && notice.title.length <= 128 && typeof notice.body === "string" && notice.body.length <= MAX_APPROVAL_BODY;
+    typeof notice.title === "string" && notice.title.length <= 128 && typeof notice.body === "string" && notice.body.length <= MAX_APPROVAL_BODY &&
+    (notice.detail === undefined || isApprovalDetail(notice.detail));
+}
+function isApprovalDetail(value: unknown): boolean {
+  return object(value) && isApprovalId(value.deviceId) && typeof value.sessionId === "string" && value.sessionId.length <= 256 &&
+    typeof value.dialogId === "string" && value.dialogId.length <= 256 && Array.isArray(value.decisions) && value.decisions.length <= 2 &&
+    value.decisions.every((decision: unknown) => decision === "allow" || decision === "deny");
 }

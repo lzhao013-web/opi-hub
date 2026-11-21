@@ -59,6 +59,15 @@ test("Linux 通知审批使用 notify-send 的按钮输出，关闭通知不提�
   const send = await createLinuxApprovalNotifier();
   assert.deepEqual(calls.map(call => call.args), [["--help"], ["--help"]]);
   const approval = { id: crypto.randomUUID(), title: "--test", body: 'echo "<&>"' };
+  const opened: { program: string; args: string[] }[] = [];
+  t.mock.method(childProcess, "spawn", (program: string, args: string[]) => {
+    opened.push({ program, args });
+    const child = new ChildProcess();
+    t.mock.method(child, "unref", () => {});
+    queueMicrotask(() => child.emit("spawn"));
+    return child;
+  });
+  syncBuiltinESMExports();
   const signal = new AbortController().signal;
   for (const [result, expected] of [["allow\n", "allow"], ["deny\n", "deny"], ["", undefined], ["default\n", undefined]] as const) {
     output = result;
@@ -70,6 +79,17 @@ test("Linux 通知审批使用 notify-send 的按钮输出，关闭通知不提�
   assert.deepEqual(command.args.slice(-3), ["--", "--test", 'echo "&lt;&amp;&gt;"']);
   assert.equal(command.options.shell, false);
   assert.equal(command.options.signal, signal);
+  assert.deepEqual(opened, []);
+  const url = "https://hub.example.test/#approval=a&session=b";
+  const linked = { ...approval, detail: { deviceId: notice.deviceId, dialogId: "a", sessionId: "b", decisions: [] } };
+  for (const click of ["default", "open"]) {
+    output = `${click}\n`;
+    assert.equal(await send(linked, signal, url), undefined);
+    assert.deepEqual(opened.at(-1), { program: "xdg-open", args: [url] });
+  }
+  const viewOnly = calls.at(-1);
+  assert.ok(viewOnly?.args.includes("--action=open=查看审批"));
+  assert.ok(!viewOnly?.args.some(arg => arg.startsWith("--action=allow") || arg.startsWith("--action=deny")));
 });
 
 test("Windows 订阅前验证已注册应用和通知权限，探测不发送弹窗", async (t) => {
@@ -124,7 +144,8 @@ test("Windows 命令不再使用未注册的固定应用标识", () => {
 test("Windows 原生 XML 将通知正文作为文字，并为审批按钮设置协议激活", { skip: process.platform !== "win32", timeout: 15_000 }, () => {
   const id = "00000000-0000-0000-0000-000000000001";
   const receiverId = "00000000-0000-0000-0000-000000000002";
-  const plan = notificationCommand("win32", {}, { id, receiverId, title: "审批", body: 'echo "<&"' });
+  const url = "https://hub.example.test/#approval=a&session=b";
+  const plan = notificationCommand("win32", {}, { id, receiverId, title: "审批", body: 'echo "<&"', url });
   assert.ok(plan?.input);
   const source = script(plan.args);
   const xml = source.slice(source.indexOf("$data ="), source.indexOf("$toast ="));
@@ -138,6 +159,9 @@ ${xml}
     input: plan.input, encoding: "utf8", windowsHide: true, timeout: 10_000,
   });
   assert.equal(result.status, 0, result.stderr);
+  const escaped = url.replaceAll("&", "&amp;");
+  assert.ok(result.stdout.includes(`<toast launch="${escaped}" activationType="protocol">`));
+  assert.ok(result.stdout.includes(`content="查看审批" arguments="${escaped}" activationType="protocol"`));
   assert.match(result.stdout, /<text[^>]*>echo "&lt;&amp;"<\/text>/);
   assert.ok(result.stdout.includes(`content="仅本次允许" arguments="opi-hub-approval://${receiverId}/${id}/allow" activationType="protocol"`));
   assert.ok(result.stdout.includes(`content="拒绝" arguments="opi-hub-approval://${receiverId}/${id}/deny" activationType="protocol"`));

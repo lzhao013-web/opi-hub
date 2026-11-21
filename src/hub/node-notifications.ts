@@ -1,16 +1,30 @@
 import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { json } from "../shared/protocol.ts";
-import { MAX_APPROVAL_BODY, isNodeCompletionNotice, type HubNotice, type NodeApprovalMessage, type NodeCompletionMessage, type NotificationAnswer, type NotificationSubscriptionStatus } from "../shared/notifications.ts";
-import type { ManagementState } from "../shared/management.ts";
+import { MAX_APPROVAL_BODY, isNodeCompletionNotice, type ApprovalDecision, type ApprovalLocation, type HubNotice, type NodeApprovalMessage, type NodeCompletionMessage, type NotificationAnswer, type NotificationSubscriptionStatus } from "../shared/notifications.ts";
+import type { Interaction, ManagementState } from "../shared/management.ts";
 import { HttpError } from "../shared/http.ts";
 import type { NotificationCenter } from "./notifications.ts";
 import type { Store } from "./store.ts";
 
 // o-pi 命令审批在协议中以选项文字作为值，仅转发这两种原有选项。
 const approvalChoice = { allow: "Allow once", deny: "Deny" } as const;
-interface ApprovalTarget { deviceId: string; sessionId: string; dialogId: string; destination: string }
-interface Receiver { socket: WebSocket; active?: boolean; approvals?: Map<string, ApprovalTarget> }
+interface ApprovalTarget extends ApprovalLocation { destination: string; decisions: ApprovalDecision[] }
+interface Receiver { socket: WebSocket; active?: boolean; approvals?: Map<string, ApprovalTarget>; approvalLinks?: true }
+
+function preview(text: string): string {
+  const clean = text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\ufffe\uffff]/g, " ");
+  const lines = clean.split("\n", 5);
+  if (clean.length <= MAX_APPROVAL_BODY && lines.length <= 4) return clean;
+  const prefix = "内容已截断，打开查看完整审批。\n";
+  const excerpt = lines.slice(0, 3).join("\n").slice(0, MAX_APPROVAL_BODY - prefix.length - 1).replace(/[\uD800-\uDBFF]$/, "");
+  return `${prefix}${excerpt}…`;
+}
+
+type ApprovalInteraction = Extract<Interaction, { kind: "command" | "choice" | "confirm" }>;
+function isApproval(item: Interaction): item is ApprovalInteraction {
+  return item.kind === "command" || item.kind === "choice" || item.kind === "confirm";
+}
 /** 本机开关只决定是否订阅；跨设备摘要的接收权限必须由已登录浏览器授予。 */
 export class NodeNotifications {
   private receivers = new Map<string, Receiver>();
@@ -21,9 +35,9 @@ export class NodeNotifications {
     this.store = store; this.center = center;
     this.stop = center.onLive((notice) => this.deliver(notice));
   }
-  subscribe(deviceId: string, socket: WebSocket, enabled: boolean, approvals?: true): void {
+  subscribe(deviceId: string, socket: WebSocket, enabled: boolean, approvals?: true, approvalLinks?: true): void {
     if (!enabled) { this.receivers.delete(deviceId); this.sendStatus(socket, false); return; }
-    const receiver: Receiver = { socket, approvals: approvals ? new Map() : undefined };
+    const receiver: Receiver = { socket, approvals: approvals ? new Map() : undefined, approvalLinks };
     this.receivers.set(deviceId, receiver); this.reconcile(deviceId, receiver);
   }
   status(deviceId: string): boolean {
@@ -50,21 +64,34 @@ export class NodeNotifications {
     const prior = new Set(previous?.state === "ready" ? previous.interactions.map((item) => JSON.stringify([item.sessionId, item.id])) : []);
     const name = (this.store.get(deviceId)?.name ?? "设备").replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 96);
     for (const item of state.interactions) {
-      if (item.kind !== "command" || prior.has(JSON.stringify([item.sessionId, item.id]))) continue;
-      if (!Object.values(approvalChoice).every((value) => item.options.some((option) => option.value === value))) continue;
-      const scope = item.targets.map((target) => `${target.action} ${target.kind} ${target.target}`).join("；");
-      const lines = [item.command, `目录：${item.cwd}`];
-      if (scope) lines.push(`范围：${scope}`);
-      const body = lines.join("\n");
-      if (body.length > MAX_APPROVAL_BODY || lines.some((line) => /[\u0000-\u001f\u007f]/.test(line))) continue;
+      if (!isApproval(item) || prior.has(JSON.stringify([item.sessionId, item.id]))) continue;
+      const decisions: ApprovalDecision[] = [];
+      if (item.kind !== "confirm") for (const decision of ["allow", "deny"] as const) {
+        if (item.options.some((option) => option.value === approvalChoice[decision])) decisions.push(decision);
+      }
+      let text = item.kind === "confirm" ? `${item.title}\n${item.message}` : item.title;
+      let legacy = false;
+      if (item.kind === "command") {
+        const scope = item.targets.map((target) => `${target.action} ${target.kind} ${target.target}`).join("；");
+        const lines = [item.command, `目录：${item.cwd}`];
+        if (scope) lines.push(`范围：${scope}`);
+        text = lines.join("\n");
+        legacy = decisions.length === 2 && text.length <= MAX_APPROVAL_BODY && !lines.some((line) => /[\u0000-\u001f\u007f]/.test(line));
+      }
+      const target = { deviceId, sessionId: item.sessionId, dialogId: item.id, decisions };
+      const title = `o-pi ${item.kind === "command" ? "命令审批" : "待处理审批"} · ${name}`;
+      const body = preview(text);
       for (const [receiverId, receiver] of this.receivers) {
         const destination = this.store.get(receiverId)?.notificationDestination;
         if (!receiver.approvals || !destination || !this.status(receiverId) || receiver.socket.bufferedAmount > 64 * 1024) continue;
+        if (!receiver.approvalLinks && !legacy) continue;
         const id = randomUUID();
-        const oldest = receiver.approvals.size >= 100 ? receiver.approvals.keys().next().value : undefined;
-        if (oldest !== undefined) receiver.approvals.delete(oldest);
-        receiver.approvals.set(id, { deviceId, sessionId: item.sessionId, dialogId: item.id, destination });
-        const notice = { id, title: `o-pi 命令审批 · ${name}`, body };
+        if (decisions.length) {
+          const oldest = receiver.approvals.size >= 100 ? receiver.approvals.keys().next().value : undefined;
+          if (oldest !== undefined) receiver.approvals.delete(oldest);
+          receiver.approvals.set(id, { ...target, destination });
+        }
+        const notice = receiver.approvalLinks ? { id, title, body, detail: target } : { id, title, body: text };
         void json(receiver.socket, { type: "approvalNotification", notice } satisfies NodeApprovalMessage).catch(() => receiver.socket.terminate());
       }
     }
@@ -75,7 +102,7 @@ export class NodeNotifications {
     const approvals = receiver.approvals;
     if (!approvals) return;
     const target = approvals.get(answer.id);
-    if (!target || target.destination !== this.store.get(receiverId)?.notificationDestination) return;
+    if (!target || !target.decisions.includes(answer.decision) || target.destination !== this.store.get(receiverId)?.notificationDestination) return;
     approvals.delete(answer.id);
     return { deviceId: target.deviceId, sessionId: target.sessionId, dialogId: target.dialogId, value: approvalChoice[answer.decision] };
   }

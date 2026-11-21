@@ -67,8 +67,15 @@ export class ManagementView {
       if (message) this.status.append(create("p", "notice", `${device.name}: ${message}`));
     }
   }
+  focusInteraction(deviceId, sessionId, dialogId) {
+    const card = this.cards.get(JSON.stringify([deviceId, sessionId, dialogId]));
+    if (!card) return false;
+    card.scrollIntoView({ block: "center" });
+    card.focus({ preventScroll: true });
+    return true;
+  }
   interaction(item) {
-    const card = create("article", "interaction");
+    const card = create("article", "interaction"); card.tabIndex = -1;
     card.dataset.dialogId = item.id; card.dataset.deviceId = item.deviceId;
     const header = create("div", "interaction-heading");
     const heading = create("div"); heading.append(create("h2", "", item.title), create("p", "interaction-context muted"));

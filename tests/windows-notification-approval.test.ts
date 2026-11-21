@@ -27,7 +27,7 @@ test("Windows 通知按钮回传仅本次允许和拒绝，旧按钮不处理新
     const receiver = await add(env.hub.url, env.cookie, "Windows 接收端");
     const notices: Extract<DesktopNotice, { receiverId: string }>[] = [];
     agent = startNode({ ...managedConfig(receiver.config, env.fakeB.url, env.directory), notifications: true }, () => {}, async () => async (notice) => {
-      if ("receiverId" in notice) notices.push(notice);
+      if ("receiverId" in notice && notice.detail?.deviceId === env.a.id && notice.detail.sessionId === "runtime-1") notices.push(notice);
     }, { kind: "windows", clicks });
     await agent.ready;
     const binding = await fetch(`${env.hub.url}/_hub/notifications/receiver`, {
@@ -68,7 +68,8 @@ test("Windows 通知按钮回传仅本次允许和拒绝，旧按钮不处理新
     env.fakeA.setDialogs("runtime-1", [command("allow")]);
     await waitFor(() => notices.length === 1);
     const first = buttons(0);
-    assert.deepEqual(first.map(({ label }) => label), ["仅本次允许", "拒绝"]);
+    assert.deepEqual(first.map(({ label }) => label), ["仅本次允许", "拒绝", "查看审批"]);
+    assert.equal(first[2]?.uri, `${env.hub.url}/#approval=allow&device=${env.a.id}&session=runtime-1`);
     assert.ok(first[0]);
     await click(first[0].uri);
     await waitFor(() => env.fakeA.answers.length === 1);
