@@ -94,6 +94,37 @@ test("执行节点通过原控制连接接收已授权的跨设备新通知，�
   } finally { client.close(); await env.close(); }
 });
 
+test("Linux 通知按钮的决定经中心提交到原设备，无决定不消费审批", { timeout: 15_000 }, async () => {
+  const env = await fixture();
+  let receiver: ReturnType<typeof startNode> | undefined;
+  try {
+    const entry = await add(env.hub.url, env.cookie, "Linux 接收端");
+    const received: string[] = [];
+    receiver = startNode({ ...managedConfig(entry.config, env.fakeB.url, env.directory), notifications: true }, () => {}, async () => async () => {}, {
+      kind: "linux",
+      send: async (notice) => {
+        received.push(notice.body);
+        if (notice.body.startsWith("echo approval-allow")) return "allow";
+        if (notice.body.startsWith("echo approval-deny")) return "deny";
+      },
+    });
+    await receiver.ready;
+    const bind = await fetch(env.hub.url + "/_hub/notifications/receiver", { method: "POST", headers: { Cookie: env.cookie, Origin: env.hub.url, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: entry.id, destination: crypto.randomUUID() }) });
+    assert.equal(bind.status, 200);
+    await until(() => subscribed(env.hub.url, env.cookie, entry.id));
+    env.fakeA.setDialogs("runtime-1", ["dismiss", "allow", "deny"].map((id) => ({
+      id, kind: "bashApproval", title: "命令审批", deadline: null, approval: { command: `echo approval-${id}`, cwd: "/demo", items: [] },
+      options: ["Allow once", "Deny"].map((value) => ({ label: value, value })),
+    })));
+    await until(() => received.length === 3 && env.fakeA.answers.length >= 2);
+    assert.deepEqual(env.fakeA.answers.map(({ dialogId, value }) => [dialogId, value]).sort(), [["allow", "Allow once"], ["deny", "Deny"]]);
+    const overview: unknown = await (await fetch(env.hub.url + "/_hub/overview", { headers: { Cookie: env.cookie } })).json();
+    assert.ok(object(overview) && Array.isArray(overview.interactions));
+    assert.ok(overview.interactions.some((item: unknown) => object(item) && item.deviceId === env.a.id && item.id === "dismiss"));
+    assert.equal(env.fakeB.answers.length, 0);
+  } finally { await receiver?.close(); await env.close(); }
+});
+
 test("来源节点重连的首份目录只恢复记录，不把离线期间的完成批量补弹", { timeout: 15_000 }, async () => {
   const received: NodeCompletionNotice[] = [];
   const env = await fixture(0, { b: async (notice) => { assert.ok(isNodeCompletionNotice(notice)); received.push(notice); } });

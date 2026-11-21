@@ -7,6 +7,7 @@ import { Store, secret } from "./hub/store.ts";
 import { startHub } from "./hub/server.ts";
 import { startNode } from "./node/agent.ts";
 import { validateNodeConfig } from "./node/config.ts";
+import { createLinuxApprovalNotifier } from "./node/system-notifications.ts";
 import { forwardWindowsApprovalClick, openWindowsApprovalClicks, registerWindowsApprovalHandler } from "./node/windows-approval-clicks.ts";
 
 const usage = `opi-hub — o-pi 多设备 Web 入口
@@ -15,7 +16,7 @@ bun run init [--data ./data]              初始化中心，密码从 OPI_HUB_PA
 bun run hub [--host 127.0.0.1] [--port 19200] [--data ./data]
             [--public-url https://hub.example.com] [--cert cert.pem --key key.pem]
 bun run node --config ./node.json         连接中心，配置由管理界面生成
-            [--windows-approvals]         允许在此 Windows 节点的系统通知中直接审批
+            [--windows-approvals | --linux-approvals]  允许在本机系统通知中直接审批
 
 节点根据 command 配置自动后台启动 opi-web，不支持外部后端或 target 配置。`;
 async function main(): Promise<void> {
@@ -28,7 +29,7 @@ async function main(): Promise<void> {
     args: process.argv.slice(2), allowPositionals: true, strict: true,
     options: { data: { type: "string", default: "./data" }, host: { type: "string", default: "127.0.0.1" },
       port: { type: "string", default: "19200" }, "public-url": { type: "string" }, cert: { type: "string" }, key: { type: "string" },
-      config: { type: "string" }, "windows-approvals": { type: "boolean" }, help: { type: "boolean", short: "h" } },
+      config: { type: "string" }, "windows-approvals": { type: "boolean" }, "linux-approvals": { type: "boolean" }, help: { type: "boolean", short: "h" } },
   });
   if (values.help || !positionals.length) { console.log(usage); return; }
   if (positionals.length !== 1) throw new Error("只允许一个子命令");
@@ -57,10 +58,15 @@ async function main(): Promise<void> {
     if (values["windows-approvals"] && (process.platform !== "win32" || !validateNodeConfig(config).notifications)) {
       throw new Error("--windows-approvals 需要 Windows 和启用的节点通知");
     }
+    if (values["linux-approvals"] && (process.platform !== "linux" || !validateNodeConfig(config).notifications)) {
+      throw new Error("--linux-approvals 需要 Linux 和启用的节点通知");
+    }
+    const linuxSender = values["linux-approvals"] ? await createLinuxApprovalNotifier() : undefined;
     const clicks = values["windows-approvals"] ? await openWindowsApprovalClicks() : undefined;
     try {
       if (clicks) await registerWindowsApprovalHandler(fileURLToPath(import.meta.url));
-      const node = startNode(config, console.log, undefined, clicks);
+      const approvals = clicks ? { kind: "windows", clicks } as const : linuxSender ? { kind: "linux", send: linuxSender } as const : undefined;
+      const node = startNode(config, console.log, undefined, approvals);
       await Promise.race([untilSignal(), node.closed]); await node.close();
     } finally { clicks?.close(); }
     return;

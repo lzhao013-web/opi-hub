@@ -9,23 +9,25 @@ import { isRestartBackend, type BackendReply, type NodeReport } from "../shared/
 import { validateNodeConfig } from "./config.ts";
 import { NodeRuntime } from "./runtime.ts";
 import { isTaskCommand, type TaskReply } from "../shared/tasks.ts";
-import { isNodeNotificationMessage, type NotificationSubscription } from "../shared/notifications.ts";
+import { isNodeNotificationMessage, type NotificationAnswer, type NotificationSubscription } from "../shared/notifications.ts";
 import { LocalNotifications } from "./notifications.ts";
-import { createSystemNotifier, type NotificationSender } from "./system-notifications.ts";
+import { createSystemNotifier, type LinuxApprovalSender, type NotificationSender } from "./system-notifications.ts";
 import type { WindowsApprovalClicks } from "./windows-approval-clicks.ts";
 
 export interface NodeAgent { ready: Promise<void>; closed: Promise<void>; close(): Promise<void> }
-export function startNode(input: unknown, log: (message: string) => void = console.log, notificationFactory: () => Promise<NotificationSender | null> = createSystemNotifier, approvalClicks?: WindowsApprovalClicks): NodeAgent {
+type ApprovalNotifications = { kind: "windows"; clicks: WindowsApprovalClicks } | { kind: "linux"; send: LinuxApprovalSender };
+export function startNode(input: unknown, log: (message: string) => void = console.log, notificationFactory: () => Promise<NotificationSender | null> = createSystemNotifier, approvals?: ApprovalNotifications): NodeAgent {
   const config = validateNodeConfig(input);
   const notifications = new LocalNotifications(config.notifications === true, log, notificationFactory);
   const abort = new AbortController();
   const sockets = new Set<WebSocket>(); const reads = new Set<AbortController>();
   const ready = Promise.withResolvers<void>();
   let first = true; let currentControl: WebSocket | undefined;
-  approvalClicks?.onClick((answer) => {
-    const control = currentControl;
-    if (control?.readyState === WebSocket.OPEN) void json(control, answer).catch(() => control.terminate());
-  });
+  const windowsClicks = approvals?.kind === "windows" ? approvals.clicks : undefined;
+  const sendAnswer = (control: WebSocket | undefined, answer: NotificationAnswer) => {
+    if (control === currentControl && control?.readyState === WebSocket.OPEN) void json(control, answer).catch(() => control.terminate());
+  };
+  windowsClicks?.onClick((answer) => sendAnswer(currentControl, answer));
   const runtime = new NodeRuntime(config, (value) => {
     const control = currentControl;
     if (!control || control.readyState !== WebSocket.OPEN) return;
@@ -55,6 +57,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
     while (!abort.signal.aborted) {
       const control = track(new WebSocket(webSocketUrl(config.hub, "/_hub/connect"), options));
       let statusTimer: ReturnType<typeof setInterval> | undefined; let stopped = false;
+      const linuxClicks = approvals?.kind === "linux" ? { send: approvals.send, connection: new AbortController() } : undefined;
       const historyTasks = new Map<string, AbortController>(); const directoryTasks = new Map<string, AbortController>();
       const beginRead = (tasks: Map<string, AbortController>, id: string) => { const controller = new AbortController(); tasks.set(id, controller); reads.add(controller); return controller; };
       const finishRead = (tasks: Map<string, AbortController>, id: string, controller: AbortController) => { tasks.delete(id); reads.delete(controller); };
@@ -69,7 +72,10 @@ export function startNode(input: unknown, log: (message: string) => void = conso
             if (isNodeNotificationMessage(request)) {
               if (request.type === "completionNotification") void notifications.receive(request.notice);
               else if (request.type === "approvalNotification") {
-                if (approvalClicks) void notifications.receive({ ...request.notice, receiverId: approvalClicks.receiverId });
+                if (windowsClicks) void notifications.receive({ ...request.notice, receiverId: windowsClicks.receiverId });
+                else if (linuxClicks) void notifications.receiveLinuxApproval(request.notice, linuxClicks.send, linuxClicks.connection.signal).then((decision) => {
+                  if (decision) sendAnswer(control, { type: "notificationAnswer", id: request.notice.id, decision });
+                });
               } else if (config.notifications) log(request.active ? "已订阅中心系统通知" : "系统通知未授权：请在消息中心绑定本机节点");
               return;
             }
@@ -141,7 +147,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
         currentControl = control; await json(control, { type: "management", value: runtime.snapshot }); await report(control);
         if (await notifications.ready) {
           const subscription: NotificationSubscription = { type: "subscribeNotifications", enabled: true };
-          if (approvalClicks) subscription.approvals = true;
+          if (approvals) subscription.approvals = true;
           await json(control, subscription);
         }
         if (first) { first = false; ready.resolve(); }
@@ -152,6 +158,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
       } catch (error) { if (!abort.signal.aborted) log(`中心连接失败：${error instanceof Error ? error.message : String(error)}`); }
       finally {
         clearInterval(statusTimer);
+        linuxClicks?.connection.abort();
         for (const controller of historyTasks.values()) { controller.abort(); reads.delete(controller); }
         for (const controller of directoryTasks.values()) { controller.abort(); reads.delete(controller); }
         if (currentControl === control) currentControl = undefined;

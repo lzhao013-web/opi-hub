@@ -2,11 +2,12 @@ import { execFile, spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import type { NodeApprovalNotice, NodeCompletionNotice } from "../shared/notifications.ts";
+import type { NodeApprovalNotice, NodeCompletionNotice, NotificationAnswer } from "../shared/notifications.ts";
 import { approvalClickUri } from "./windows-approval-clicks.ts";
 
 export type DesktopNotice = NodeCompletionNotice | (NodeApprovalNotice & { receiverId: string });
 export type NotificationSender = (notice: DesktopNotice, signal: AbortSignal) => Promise<void>;
+export type LinuxApprovalSender = (notice: NodeApprovalNotice, signal: AbortSignal) => Promise<NotificationAnswer["decision"] | undefined>;
 export interface NotificationCommand { program: string; args: string[]; input?: string }
 const appleScript = 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run';
 // 探测和发送共用注册身份与权限检查，不能把能启动 PowerShell 当作通知可用。
@@ -67,6 +68,10 @@ ${windowsSetup}${body}
 `;
   return { program: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], input };
 }
+const linuxDesktop = (env: NodeJS.ProcessEnv) => (env.DISPLAY || env.WAYLAND_DISPLAY) && (env.DBUS_SESSION_BUS_ADDRESS || env.XDG_RUNTIME_DIR);
+const isTermux = (env: NodeJS.ProcessEnv) => Boolean(env.TERMUX_VERSION || env.PREFIX?.startsWith("/data/data/com.termux/"));
+const escapeBody = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+
 export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: DesktopNotice): NotificationCommand | null {
   if ("receiverId" in notice) {
     if (platform !== "win32" || env.SESSIONNAME?.toLowerCase() === "services") return null;
@@ -79,13 +84,12 @@ export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.Proce
   }
   const clean = (text: string) => Array.from(text.replace(/[\u0000-\u001f\u007f]/g, " ")).slice(0, 256).join("");
   const title = "o-pi 执行已完成"; const body = `${clean(notice.deviceName)} · ${clean(notice.title) || "未命名会话"}`;
-  if (platform === "linux" && (env.TERMUX_VERSION || env.PREFIX?.startsWith("/data/data/com.termux/"))) {
+  if (platform === "linux" && isTermux(env)) {
     return { program: "termux-notification", args: ["--title", title, "--content", body, "--id", "opi-hub-completion"] };
   }
   if (platform === "linux") {
-    if ((!env.DISPLAY && !env.WAYLAND_DISPLAY) || (!env.DBUS_SESSION_BUS_ADDRESS && !env.XDG_RUNTIME_DIR)) return null;
-    const escaped = body.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-    return { program: "notify-send", args: ["--app-name=opi-hub", "--icon=dialog-information", "--urgency=normal", "--", title, escaped] };
+    if (!linuxDesktop(env)) return null;
+    return { program: "notify-send", args: ["--app-name=opi-hub", "--icon=dialog-information", "--urgency=normal", "--", title, escapeBody(body)] };
   }
   if (platform === "darwin") return { program: "/usr/bin/osascript", args: ["-e", appleScript, "--", title, body] };
   if (platform === "win32") {
@@ -108,18 +112,36 @@ function probe(program: string, args: string[]): Promise<boolean> {
     child.once("error", () => resolve(false)); child.once("close", (code) => resolve(code === 0));
   });
 }
-function execute(command: NotificationCommand, signal?: AbortSignal): Promise<void> {
+function execute(command: NotificationCommand, signal?: AbortSignal, timeout = 10_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile(command.program, command.args, { encoding: "utf8", shell: false, windowsHide: true, timeout: 10_000, maxBuffer: 8192, signal }, (error, _stdout, stderr) => {
+    const child = execFile(command.program, command.args, { encoding: "utf8", shell: false, windowsHide: true, timeout, maxBuffer: 8192, signal }, (error, stdout, stderr) => {
       if (error) {
         // 不记录 execFile 的完整错误消息，其中可能带有命令参数和通知摘要。
         const detail = stderr.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 512);
         reject(new Error(`通知命令失败（${error.killed ? "超时或已终止" : error.code ?? "unknown"}）${detail ? `：${detail}` : ""}`));
-      } else resolve();
+      } else resolve(stdout);
     });
     child.stdin?.on("error", () => {}); child.stdin?.end(command.input ?? "");
   });
 }
+export async function createLinuxApprovalNotifier(): Promise<LinuxApprovalSender> {
+  const env = process.env;
+  if (!linuxDesktop(env) || isTermux(env)) throw new Error("Linux 通知审批需要本机桌面会话和用户 D-Bus，不支持 Termux");
+  const program = await executable("notify-send");
+  if (!program || !(await execute({ program, args: ["--help"] })).includes("--action")) {
+    throw new Error("Linux 通知审批需要支持 --action 的 notify-send");
+  }
+  return async ({ title, body }, signal) => {
+    const wait = 120_000;
+    const args = [
+      "--app-name=opi-hub", "--icon=dialog-question", `--expire-time=${wait}`,
+      "--action=allow=仅本次允许", "--action=deny=拒绝", "--", title, escapeBody(body),
+    ];
+    const action = (await execute({ program, args }, signal, wait + 5000)).trim();
+    if (action === "allow" || action === "deny") return action;
+  };
+}
+
 export async function createSystemNotifier(): Promise<NotificationSender | null> {
   const env = { ...process.env }; const platform = process.platform;
   const sample: NodeCompletionNotice = { id: "probe", deviceId: "00000000-0000-0000-0000-000000000000", deviceName: "", title: "", completedAt: new Date().toISOString() };

@@ -28,7 +28,7 @@ test("Windows 通知按钮回传仅本次允许和拒绝，旧按钮不处理新
     const notices: Extract<DesktopNotice, { receiverId: string }>[] = [];
     agent = startNode({ ...managedConfig(receiver.config, env.fakeB.url, env.directory), notifications: true }, () => {}, async () => async (notice) => {
       if ("receiverId" in notice) notices.push(notice);
-    }, clicks);
+    }, { kind: "windows", clicks });
     await agent.ready;
     const binding = await fetch(`${env.hub.url}/_hub/notifications/receiver`, {
       method: "POST", headers: { Cookie: env.cookie, Origin: env.hub.url, "Content-Type": "application/json" },

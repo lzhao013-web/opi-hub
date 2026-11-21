@@ -4,28 +4,22 @@ import childProcess, { ChildProcess, type ExecFileException, type ExecFileOption
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { PassThrough } from "node:stream";
-import { createSystemNotifier, notificationCommand } from "../src/node/system-notifications.ts";
+import { createLinuxApprovalNotifier, createSystemNotifier, notificationCommand } from "../src/node/system-notifications.ts";
 import { LocalNotifications } from "../src/node/notifications.ts";
 import type { NodeCompletionNotice } from "../src/shared/notifications.ts";
 
 const notice: NodeCompletionNotice = { id: "windows", deviceId: "00000000-0000-0000-0000-000000000001", deviceName: "测试设备", title: "中文 & <标题> ' $() 😀", completedAt: "2026-11-14T10:00:00.000Z" };
 interface Invocation { program: string; args: string[]; options: ExecFileOptions; input: string }
-interface Result { error: ExecFileException | null; stderr: string }
+interface Result { error: ExecFileException | null; stderr: string; stdout?: string }
 const success: Result = { error: null, stderr: "" };
 function script(args: string[]): string {
   const encoded = args.indexOf("-EncodedCommand");
   const value = args[encoded >= 0 ? encoded + 1 : args.indexOf("-Command") + 1];
   assert.ok(value); return encoded >= 0 ? Buffer.from(value, "base64").toString("utf16le") : value;
 }
-function windowsEnvironment(t: TestContext, result: (call: Invocation) => Result = () => success): Invocation[] {
-  const descriptor = Object.getOwnPropertyDescriptor(process, "platform"); assert.ok(descriptor);
-  const session = process.env.SESSIONNAME; process.env.SESSIONNAME = "Console";
-  Object.defineProperty(process, "platform", { value: "win32" });
+function mockCommands(t: TestContext, result: (call: Invocation) => Result): Invocation[] {
   const calls: Invocation[] = [];
-  t.after(() => {
-    t.mock.restoreAll(); syncBuiltinESMExports(); Object.defineProperty(process, "platform", descriptor);
-    if (session === undefined) delete process.env.SESSIONNAME; else process.env.SESSIONNAME = session;
-  });
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   t.mock.method(fs, "access", async () => {});
   t.mock.method(childProcess, "spawn", () => {
     const child = new ChildProcess(); queueMicrotask(() => child.emit("close", 0)); return child;
@@ -34,11 +28,49 @@ function windowsEnvironment(t: TestContext, result: (call: Invocation) => Result
     const child = new ChildProcess(); child.stdin = new PassThrough();
     const call: Invocation = { program, args, options, input: "" }; calls.push(call);
     child.stdin.on("data", (chunk: Buffer) => { call.input += chunk.toString("utf8"); });
-    queueMicrotask(() => { const value = result(call); callback(value.error, "", value.stderr); });
+    queueMicrotask(() => { const value = result(call); callback(value.error, value.stdout ?? "", value.stderr); });
     return child;
   });
   syncBuiltinESMExports(); return calls;
 }
+
+function windowsEnvironment(t: TestContext, result: (call: Invocation) => Result = () => success): Invocation[] {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform"); assert.ok(descriptor);
+  const session = process.env.SESSIONNAME; process.env.SESSIONNAME = "Console";
+  Object.defineProperty(process, "platform", { value: "win32" });
+  t.after(() => {
+    Object.defineProperty(process, "platform", descriptor);
+    if (session === undefined) delete process.env.SESSIONNAME; else process.env.SESSIONNAME = session;
+  });
+  return mockCommands(t, result);
+}
+
+test("Linux 通知审批使用 notify-send 的按钮输出，关闭通知不提交决定", async (t) => {
+  const saved = { ...process.env };
+  for (const key of ["DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "TERMUX_VERSION", "PREFIX"]) {
+    t.after(() => { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; });
+  }
+  process.env.DISPLAY = ":1"; process.env.DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/1/bus";
+  delete process.env.TERMUX_VERSION; delete process.env.PREFIX;
+  let output = "旧版 notify-send";
+  const calls = mockCommands(t, () => ({ ...success, stdout: output }));
+  await assert.rejects(createLinuxApprovalNotifier(), /需要支持 --action/);
+  output = "  -A, --action=[NAME=]Text...";
+  const send = await createLinuxApprovalNotifier();
+  assert.deepEqual(calls.map(call => call.args), [["--help"], ["--help"]]);
+  const approval = { id: crypto.randomUUID(), title: "--test", body: 'echo "<&>"' };
+  const signal = new AbortController().signal;
+  for (const [result, expected] of [["allow\n", "allow"], ["deny\n", "deny"], ["", undefined], ["default\n", undefined]] as const) {
+    output = result;
+    assert.equal(await send(approval, signal), expected);
+  }
+  const command = calls[2]; assert.ok(command);
+  assert.ok(command.args.includes("--action=allow=仅本次允许"));
+  assert.ok(command.args.includes("--action=deny=拒绝"));
+  assert.deepEqual(command.args.slice(-3), ["--", "--test", 'echo "&lt;&amp;&gt;"']);
+  assert.equal(command.options.shell, false);
+  assert.equal(command.options.signal, signal);
+});
 
 test("Windows 订阅前验证已注册应用和通知权限，探测不发送弹窗", async (t) => {
   const calls = windowsEnvironment(t);

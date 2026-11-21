@@ -80,7 +80,7 @@ export class MessageCenter {
     const permission = supported ? Notification.permission : "unsupported";
     $("enable-notifications").hidden = active || permission !== "default";
     const browser = permission === "granted" ? "浏览器系统通知已允许，关闭全部 Hub 页面后不推送。" : permission === "denied" ? "浏览器系统通知已被拒绝，可在站点设置中修改。" : permission === "unsupported" ? "浏览器系统通知需要 HTTPS 或 localhost。" : "可允许浏览器系统通知，在 Hub 页面保持打开时接收提醒。";
-    $("notification-permission").textContent = active ? `已授权“${receiver.name}”节点接收各设备的完成摘要，由它发送系统通知。启用了通知审批的 Windows 节点还可以接收并直接处理命令审批。关闭网页后仍可接收，实际显示受系统权限和勿扰模式限制。` :
+    $("notification-permission").textContent = active ? `已授权“${receiver.name}”节点接收各设备的完成摘要，由它发送系统通知。启用了通知审批的 Windows 或 Linux 节点还可以接收并直接处理命令审批。关闭网页后仍可接收，实际显示受系统权限和勿扰模式限制。` :
       (receiver ? `“${receiver.name}”节点未订阅：请确认本机未设置 notifications: false、节点在线且系统通知工具可用。目前回退浏览器提醒。` : "选择本机节点可授权它接收各设备的完成摘要，不依赖浏览器 HTTPS 权限。") + ` ${browser} 站内完成记录始终保留。`;
   }
   render() {

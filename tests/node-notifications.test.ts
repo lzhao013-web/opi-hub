@@ -53,6 +53,29 @@ test("本机通知关闭时不初始化工具，重复事件和失败不重复�
   assert.ok(logs.some((line) => line.includes("未自动重试")));
   local.close(); await local.receive(notice("late")); assert.equal(called, 1);
 });
+test("Linux 等待审批按钮时不阻塞其他审批或完成通知，断线取消等待", { timeout: 5000 }, async () => {
+  const printed: string[] = [];
+  const local = new LocalNotifications(true, () => {}, async () => async (value) => { printed.push(value.id); });
+  const connection = new AbortController();
+  const started = Promise.withResolvers<AbortSignal>();
+  try {
+    const first = local.receiveLinuxApproval({ id: "first", title: "审批", body: "echo first" }, async (_notice, signal) => {
+      started.resolve(signal);
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return undefined;
+    }, connection.signal);
+    const wait = await started.promise;
+    await local.receive(notice("completed"));
+    const second = await local.receiveLinuxApproval({ id: "second", title: "审批", body: "echo second" }, async () => "deny", connection.signal);
+    assert.equal(second, "deny");
+    assert.deepEqual(printed, ["completed"]);
+    assert.equal(wait.aborted, false);
+    connection.abort();
+    assert.equal(await first, undefined);
+    assert.equal(wait.aborted, true);
+  } finally { connection.abort(); local.close(); }
+});
+
 test("本机通知队列有界且串行，关闭会取消尚未发送的弹窗", async () => {
   const started = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>(); const sent: string[] = []; const logs: string[] = [];
   const local = new LocalNotifications(true, (line) => logs.push(line), async () => async (value, signal) => {
