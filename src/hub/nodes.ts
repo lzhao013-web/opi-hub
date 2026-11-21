@@ -126,7 +126,7 @@ export class Nodes {
           node.management = value.value; this.onManagement(id, value.value, initial);
           this.notifications?.offerApprovals(id, value.value, previous);
         }
-        else if (isNotificationSubscription(value)) this.notifications?.subscribe(id, node.socket, value.enabled, value.approvals, value.approvalLinks);
+        else if (isNotificationSubscription(value)) this.notifications?.subscribe(id, node.socket, value.enabled, value.approvals, value.approvalLinks, value.nativeTabFocus);
         else if (isNotificationAnswer(value)) {
           const answer = this.notifications?.takeApproval(id, socket, value);
           // 审批已在别处处理或设备离线时，通知点击不重试。

@@ -12,11 +12,11 @@ export function isCompletionNotice(value: unknown): value is CompletionNotice {
 export interface HubNotice extends CompletionNotice { deviceId: string; read: boolean }
 
 export const isNotificationDestination = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value);
-export interface NotificationSubscription { type: "subscribeNotifications"; enabled: boolean; approvals?: true; approvalLinks?: true }
+export interface NotificationSubscription { type: "subscribeNotifications"; enabled: boolean; approvals?: true; approvalLinks?: true; nativeTabFocus?: true }
 export interface NotificationSubscriptionStatus { type: "notificationSubscription"; active: boolean; completionLinks?: true }
 /** 节点弹窗只需要来源和标题，不下发正文、文件路径或浏览器凭据。 */
 export interface NodeCompletionNotice { id: string; deviceId: string; deviceName: string; title: string; completedAt: string }
-export interface NodeCompletionMessage { type: "completionNotification"; notice: NodeCompletionNotice }
+export interface NodeCompletionMessage { type: "completionNotification"; notice: NodeCompletionNotice; focusTab?: string }
 export function completionUrl(origin: string, id: string): string {
   const url = new URL("/", origin);
   url.hash = new URLSearchParams({ completion: id }).toString();
@@ -42,6 +42,7 @@ export function isNotificationAnswer(value: unknown): value is NotificationAnswe
 }
 export function isNotificationSubscription(value: unknown): value is NotificationSubscription {
   return object(value) && value.type === "subscribeNotifications" && typeof value.enabled === "boolean" &&
+    (value.nativeTabFocus === undefined || value.nativeTabFocus === true) &&
     (value.approvals === undefined || value.approvals === true) &&
     (value.approvalLinks === undefined || value.approvalLinks === true && value.approvals === true);
 }
@@ -56,7 +57,8 @@ export function isNodeNotificationMessage(value: unknown): value is Notification
   if (value.type === "notificationSubscription") {
     return typeof value.active === "boolean" && (value.completionLinks === undefined || value.completionLinks === true);
   }
-  if (value.type === "completionNotification") return isNodeCompletionNotice(value.notice);
+  if (value.type === "completionNotification") return isNodeCompletionNotice(value.notice) &&
+    (value.focusTab === undefined || typeof value.focusTab === "string" && /^[0-9a-f]{32}$/.test(value.focusTab));
   const notice = value.notice;
   return value.type === "approvalNotification" && object(notice) && isApprovalId(notice.id) &&
     typeof notice.title === "string" && notice.title.length <= 128 && typeof notice.body === "string" && notice.body.length <= MAX_APPROVAL_BODY &&

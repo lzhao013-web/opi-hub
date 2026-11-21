@@ -33,20 +33,23 @@ async function subscribed(url: string, cookie: string, id: string) {
 test("省略 notifications 时默认检测并订阅，仍须中心显式授权后才接收提醒", { timeout: 15_000 }, async () => {
   const env = await fixture(); const client = new OpiClient(new URL(env.fakeA.url), () => {});
   let receiver: ReturnType<typeof startNode> | undefined; let initialized = 0;
-  const delivered: { id: string; url: string | undefined }[] = [];
+  const delivered: { id: string; url: string | undefined; focusUrl: string | undefined }[] = [];
   try {
     const entry = await add(env.hub.url, env.cookie, "默认通知接收端");
     const config = managedConfig(entry.config, env.fakeB.url, env.directory); delete config.notifications;
     receiver = startNode(config, () => {}, async () => {
       initialized++;
-      return async (notice, _signal, url) => { delivered.push({ id: notice.id, url }); };
-    });
+      return async (notice, _signal, url, focusUrl) => { delivered.push({ id: notice.id, url, focusUrl }); };
+    }, undefined, true);
     await receiver.ready; assert.equal(initialized, 1); assert.equal(await subscribed(env.hub.url, env.cookie, entry.id), false);
     const response = await fetch(env.hub.url + "/_hub/notifications/receiver", { method: "POST", headers: { Cookie: env.cookie, Origin: env.hub.url, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: entry.id, destination: crypto.randomUUID() }) });
     assert.equal(response.status, 200); await until(() => subscribed(env.hub.url, env.cookie, entry.id));
     await client.ready; await client.action({ action: "prompt", text: "默认开启后通过模拟通知发送器接收", images: [], behavior: "followUp" }, "runtime-1");
     await until(() => delivered.length === 1);
     const item = delivered[0]; assert.ok(item?.url);
+    assert.ok(item.focusUrl);
+    const focus = new URL(item.focusUrl); assert.equal(focus.origin, env.hub.url); assert.equal(focus.pathname, `/n/${env.a.id}/`);
+    assert.match(focus.search, /^\?hub-tab=[a-f0-9]{32}$/);
     const link = new URL(item.url);
     assert.equal(link.origin, env.hub.url);
     assert.equal(link.pathname + link.search, "/");

@@ -1,9 +1,7 @@
-import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
-import { promisify } from "node:util";
+import { prepareLauncher, registerLauncher } from "./windows-launcher.ts";
 import { isApprovalId, type NotificationAnswer } from "../shared/notifications.ts";
 
 const scheme = "opi-hub-approval";
@@ -77,42 +75,12 @@ public static class ApprovalClick {
 }
 `;
 
-async function runPowerShell(script: string, env: NodeJS.ProcessEnv): Promise<void> {
-  await promisify(execFile)("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
-    env: { ...process.env, ...env }, shell: false, windowsHide: true, timeout: 10_000,
-  });
-}
-
-export async function prepareWindowsApprovalLauncher(directory: string): Promise<string> {
-  const version = createHash("sha256").update(launcherSource).digest("hex").slice(0, 16);
-  const launcher = path.join(directory, `approval-click-${version}.exe`);
-  await mkdir(directory, { recursive: true });
-  await runPowerShell(String.raw`
-$ErrorActionPreference = 'Stop'
-$output = $env:OPI_HUB_APPROVAL_EXE
-if (-not [IO.File]::Exists($output)) {
-  $temp = Join-Path ([IO.Path]::GetDirectoryName($output)) ([guid]::NewGuid().ToString() + '.exe')
-  try {
-    Add-Type -TypeDefinition $env:OPI_HUB_APPROVAL_SOURCE -OutputAssembly $temp -OutputType WindowsApplication
-    try { [IO.File]::Move($temp, $output) }
-    catch [IO.IOException] { if (-not [IO.File]::Exists($output)) { throw } }
-  } finally { [IO.File]::Delete($temp) }
-}
-`, { OPI_HUB_APPROVAL_EXE: launcher, OPI_HUB_APPROVAL_SOURCE: launcherSource });
-  return launcher;
+export function prepareWindowsApprovalLauncher(directory: string) {
+  return prepareLauncher(directory, "approval-click", launcherSource);
 }
 
 export async function registerWindowsApprovalHandler(): Promise<void> {
   const local = process.env.LOCALAPPDATA;
   if (!local) throw new Error("Windows 审批入口需要 LOCALAPPDATA");
-  const launcher = await prepareWindowsApprovalLauncher(path.join(local, "opi-hub"));
-  const script = String.raw`
-$ErrorActionPreference = 'Stop'
-$key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Software\Classes\opi-hub-approval')
-$key.SetValue('', 'URL:opi-hub 审批通知')
-$key.SetValue('URL Protocol', '')
-$key.CreateSubKey('shell\open\command').SetValue('', $env:OPI_HUB_APPROVAL_HANDLER)
-`;
-  // URL 只作为 GUI 程序的参数，不经过命令解释器。
-  await runPowerShell(script, { OPI_HUB_APPROVAL_HANDLER: `"${launcher}" "%1"` });
+  await registerLauncher(scheme, "URL:opi-hub 审批通知", await prepareWindowsApprovalLauncher(path.join(local, "opi-hub")));
 }

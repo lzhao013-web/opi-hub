@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { json } from "../shared/protocol.ts";
 import { MAX_APPROVAL_BODY, isNodeCompletionNotice, type ApprovalDecision, type ApprovalLocation, type HubNotice, type NodeApprovalMessage, type NodeCompletionMessage, type NotificationAnswer, type NotificationSubscriptionStatus } from "../shared/notifications.ts";
@@ -10,7 +10,7 @@ import type { Store } from "./store.ts";
 // o-pi 命令审批在协议中以选项文字作为值，仅转发这两种原有选项。
 const approvalChoice = { allow: "Allow once", deny: "Deny" } as const;
 interface ApprovalTarget extends ApprovalLocation { destination: string; decisions: ApprovalDecision[] }
-interface Receiver { socket: WebSocket; active?: boolean; approvals?: Map<string, ApprovalTarget>; approvalLinks?: true }
+interface Receiver { socket: WebSocket; active?: boolean; approvals?: Map<string, ApprovalTarget>; approvalLinks?: true; nativeTabFocus?: true }
 
 function preview(text: string): string {
   const clean = text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\ufffe\uffff]/g, " ");
@@ -28,6 +28,7 @@ function isApproval(item: Interaction): item is ApprovalInteraction {
 /** 本机开关只决定是否订阅；跨设备摘要的接收权限必须由已登录浏览器授予。 */
 export class NodeNotifications {
   private receivers = new Map<string, Receiver>();
+  private readonly focusSecret = randomBytes(32);
   private stop: () => void;
   private store: Store;
   private center: NotificationCenter;
@@ -35,9 +36,9 @@ export class NodeNotifications {
     this.store = store; this.center = center;
     this.stop = center.onLive((notice) => this.deliver(notice));
   }
-  subscribe(deviceId: string, socket: WebSocket, enabled: boolean, approvals?: true, approvalLinks?: true): void {
+  subscribe(deviceId: string, socket: WebSocket, enabled: boolean, approvals?: true, approvalLinks?: true, nativeTabFocus?: true): void {
     if (!enabled) { this.receivers.delete(deviceId); this.sendStatus(socket, false); return; }
-    const receiver: Receiver = { socket, approvals: approvals ? new Map() : undefined, approvalLinks };
+    const receiver: Receiver = { socket, approvals: approvals ? new Map() : undefined, approvalLinks, nativeTabFocus };
     this.receivers.set(deviceId, receiver); this.reconcile(deviceId, receiver);
   }
   status(deviceId: string): boolean {
@@ -46,6 +47,11 @@ export class NodeNotifications {
   }
   activeDestination(destination: string): boolean {
     return this.store.list().some((device) => device.notificationDestination === destination && this.status(device.id));
+  }
+  // 同一个浏览器接收端、设备和会话共享标记。节点看不到会话路径，旧通知也不会匹配切走后的标签页。
+  focusTab(destination: string, deviceId: string, sessionId: string | null): string | undefined {
+    if (!sessionId || !this.store.list().some(device => device.notificationDestination === destination && this.receivers.get(device.id)?.nativeTabFocus && this.status(device.id))) return;
+    return createHmac("sha256", this.focusSecret).update(JSON.stringify([destination, deviceId, sessionId])).digest("hex").slice(0, 32);
   }
   async bind(deviceId: string | null, destination: string): Promise<void> {
     if (!await this.store.bindNotifications(deviceId, destination)) throw new HttpError(404, "通知接收设备不存在");
@@ -124,7 +130,8 @@ export class NodeNotifications {
       if (!destination || !this.status(id) || receiver.socket.bufferedAmount > 64 * 1024) continue;
       try { if (!this.center.claim(notice.id, destination)) continue; }
       catch { continue; } // 单条通知的接收端上限不应中断执行节点的管理订阅。
-      void json(receiver.socket, { type: "completionNotification", notice: payload } satisfies NodeCompletionMessage).catch(() => receiver.socket.terminate());
+      const focusTab = receiver.nativeTabFocus && !notice.runId ? this.focusTab(destination, notice.deviceId, notice.sessionId) : undefined;
+      void json(receiver.socket, { type: "completionNotification", notice: payload, focusTab } satisfies NodeCompletionMessage).catch(() => receiver.socket.terminate());
     }
   }
 }

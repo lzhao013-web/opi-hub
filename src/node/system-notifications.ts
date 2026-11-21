@@ -3,10 +3,11 @@ import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import type { ApprovalDecision, NodeApprovalNotice, NodeCompletionNotice } from "../shared/notifications.ts";
+import { protectCompletionLink } from "./windows-completion-focus.ts";
 import { approvalClickUri } from "./windows-approval-clicks.ts";
 
 export type DesktopNotice = NodeCompletionNotice | (NodeApprovalNotice & { receiverId: string; url?: string });
-export type NotificationSender = ((notice: DesktopNotice, signal: AbortSignal, completionLink?: string) => Promise<void>) & {
+export type NotificationSender = ((notice: DesktopNotice, signal: AbortSignal, completionLink?: string, focusUrl?: string) => Promise<void>) & {
   waitForCompletionClick?: (notice: NodeCompletionNotice, signal: AbortSignal, url: string) => Promise<void>;
 };
 export type LinuxApprovalSender = (notice: NodeApprovalNotice, signal: AbortSignal, url?: string) => Promise<ApprovalDecision | undefined>;
@@ -38,6 +39,7 @@ Assert-NotificationSetting $true
 // 脚本固定，来自中心的文字只经标准输入进入 XML 文本节点，不能成为 PowerShell 代码。
 const windowsToast = `
 $data = [Console]::In.ReadToEnd() | ConvertFrom-Json
+${protectCompletionLink}
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text></text><text></text></binding></visual></toast>')
 $text = $xml.GetElementsByTagName('text')
@@ -90,7 +92,7 @@ function linuxCompletionArgs(notice: NodeCompletionNotice, actions: string[] = [
   return ["--app-name=opi-hub", "--icon=dialog-information", "--urgency=normal", ...actions, "--", title, escapeBody(body)];
 }
 
-export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: DesktopNotice, completionLink?: string): NotificationCommand | null {
+export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: DesktopNotice, completionLink?: string, focusUrl?: string): NotificationCommand | null {
   if ("receiverId" in notice) {
     if (platform !== "win32" || env.SESSIONNAME?.toLowerCase() === "services") return null;
     const { title, body, receiverId, id, detail, url } = notice;
@@ -112,7 +114,7 @@ export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.Proce
   if (platform === "win32") {
     if (env.SESSIONNAME?.toLowerCase() === "services") return null;
     const actions = completionLink ? [{ label: "查看结果", uri: completionLink }] : undefined;
-    return windowsCommand(windowsToast, JSON.stringify({ title, body, url: completionLink, actions }));
+    return windowsCommand(windowsToast, JSON.stringify({ title, body, url: completionLink, actions, focusUrl }));
   }
   return null;
 }
@@ -187,8 +189,8 @@ export async function createSystemNotifier(): Promise<NotificationSender | null>
     if (uid === undefined || !await probe("/bin/launchctl", ["print", `gui/${uid}`])) return null;
   }
   if (platform === "win32") await execute({ ...windowsCommand(""), program });
-  const send: NotificationSender = async (notice, signal, completionLink) => {
-    const command = notificationCommand(platform, env, notice, completionLink);
+  const send: NotificationSender = async (notice, signal, completionLink, focusUrl) => {
+    const command = notificationCommand(platform, env, notice, completionLink, focusUrl);
     if (!command) throw new Error("本机通知环境不可用");
     await execute({ ...command, program }, signal);
   };

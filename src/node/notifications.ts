@@ -29,7 +29,7 @@ export class LocalNotifications {
     if (this.seen.size > 100) { const oldest = this.seen.values().next().value; if (oldest !== undefined) this.seen.delete(oldest); }
     return true;
   }
-  async receive(notice: DesktopNotice, completionLink?: string): Promise<void> {
+  async receive(notice: DesktopNotice, completionLink?: string, focusUrl?: string): Promise<void> {
     const signal = this.controller.signal;
     if (!await this.ready || signal.aborted || !this.remember(notice.id)) return;
     const sender = this.sender;
@@ -44,7 +44,7 @@ export class LocalNotifications {
     if (this.pending >= 32) { this.log("本机通知队列已满，本条不弹出，可在消息中心查看"); return; }
     this.pending++;
     this.tail = this.tail.then(async () => {
-      if (!signal.aborted && sender) await sender(notice, signal, completionLink);
+      if (!signal.aborted && sender) await sender(notice, signal, completionLink, focusUrl);
     }).catch((error: unknown) => this.sendFailed(error)).finally(() => { this.pending--; });
     await this.tail;
   }

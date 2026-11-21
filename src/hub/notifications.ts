@@ -99,7 +99,7 @@ export async function notificationRoute(url: URL, req: IncomingMessage, res: Ser
   }
   if (url.pathname === "/_hub/notifications/presence" && typeof body.pageId === "string" && /^[a-f0-9]{32}$/.test(body.pageId) && typeof body.sequence === "number" && Number.isSafeInteger(body.sequence) && body.sequence >= 0 &&
     typeof body.deviceId === "string" && /^[a-f0-9-]{36}$/.test(body.deviceId) && (body.sessionId === null || typeof body.sessionId === "string" && body.sessionId.length <= 128) && typeof body.destination === "string" && /^[a-f0-9-]{36}$/.test(body.destination) && typeof body.focused === "boolean") {
-    center.attend(session, body.pageId, body.sequence, body.deviceId, body.sessionId, body.destination, body.focused); reply(res, 200, { ok: true, nodeNotifications: receivers.activeDestination(body.destination) }); return true;
+    center.attend(session, body.pageId, body.sequence, body.deviceId, body.sessionId, body.destination, body.focused); reply(res, 200, { ok: true, nodeNotifications: receivers.activeDestination(body.destination), focusTab: receivers.focusTab(body.destination, body.deviceId, body.sessionId) }); return true;
   }
   if (url.pathname === "/_hub/notifications/read" && (body.id === null || typeof body.id === "string")) { center.read(body.id); reply(res, 200, { ok: true }); return true; }
   if (url.pathname === "/_hub/notifications/claim" && typeof body.id === "string" && typeof body.destination === "string" && /^[a-f0-9-]{36}$/.test(body.destination)) {

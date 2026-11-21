@@ -10,6 +10,15 @@
   let destination = localStorage.getItem("opi-hub.notification-destination");
   if (!destination) { destination = viewerId.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5"); localStorage.setItem("opi-hub.notification-destination", destination); }
   let selectedId = null; let lastHub = 0; let nodeNotificationsUntil = 0; let closed = false; let sequence = 0;
+  // Chrome 的本机 --focus 按地址选择标签页。只更新地址栏，不重载，也不改变原生会话的打开参数。
+  const setFocusTab = (marker) => {
+    const url = new URL(location.href);
+    if (url.searchParams.get("hub-tab") === marker) return;
+    url.searchParams.delete("hub-tab");
+    if (marker !== null) url.search = new URLSearchParams([["hub-tab", marker], ...url.searchParams]);
+    history.replaceState(history.state, "", url);
+  };
+  setFocusTab(null);
   let waitingForTarget = Boolean(targetId);
   let targetError;
   void import("/_hub/completion-tabs.js").then(({ completionTabs }) => {
@@ -22,7 +31,13 @@
     // 查看状态是可过期的提示。断网或页面退出时上报失败不影响原生会话。
     const sent = ++sequence;
     void fetch("/_hub/notifications/presence", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageId: viewerId, sequence: sent, deviceId: value.deviceId, sessionId: selectedId, destination, focused: value.focused }) })
-      .then(async (response) => { if (!response.ok) return; const status = await response.json(); if (sent === sequence) nodeNotificationsUntil = status.nodeNotifications === true ? Date.now() + 12_000 : 0; }).catch(() => {});
+      .then(async (response) => {
+        if (!response.ok) return;
+        const status = await response.json();
+        if (closed || sent !== sequence) return;
+        nodeNotificationsUntil = status.nodeNotifications === true ? Date.now() + 12_000 : 0;
+        setFocusTab(!leaving && /^[a-f0-9]{32}$/.test(status.focusTab) ? status.focusTab : null);
+      }).catch(() => {});
   };
   channel.onmessage = ({ data }) => { if (data?.type === "hub") { lastHub = Date.now(); presence(); } };
   for (const event of ["focus", "blur"]) window.addEventListener(event, () => presence());
@@ -58,7 +73,7 @@
       super(route(url), protocols);
       const routed = new URL(route(url));
       if (routed.pathname !== prefix + "api/events" || routed.searchParams.get("hub-preview") === "1") return;
-      this.addEventListener("close", () => { selectedId = null; presence(); });
+      this.addEventListener("close", () => { selectedId = null; setFocusTab(null); presence(); });
       this.addEventListener("message", (event) => {
         let delivery;
         try { delivery = JSON.parse(event.data); } catch { return; }
@@ -67,6 +82,7 @@
         if ((delivery.kind !== undefined && delivery.kind !== "frame") || !Array.isArray(delivery.events)) return;
         for (const item of delivery.events) {
           if (item.type === "selected") {
+            if (selectedId !== (item.session?.id ?? null)) setFocusTab(null);
             selectedId = item.session?.id ?? null;
             presence();
             if (waitingForTarget) {

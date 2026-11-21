@@ -253,13 +253,13 @@ test("浏览器授权节点接收完成摘要，同一接收端不重复弹窗�
   const created: unknown = await (await page.request.post("/_hub/devices", { headers: { Origin: origin }, data: { name: `通知接收测试 ${info.project.name}` } })).json();
   if (!object(created) || typeof created.id !== "string" || !object(created.config) || typeof created.config.token !== "string") throw new Error("缺少测试接收节点");
   const receiver = new NodeSocket(origin.replace(/^http/, "ws") + "/_hub/connect", { headers: { Authorization: `Bearer ${created.config.token}` } });
-  const received: NodeCompletionNotice[] = [];
+  const received: NodeCompletionNotice[] = []; const markers: (string | undefined)[] = [];
   receiver.on("message", (raw) => {
     const value: unknown = JSON.parse(raw.toString());
-    if (isNodeNotificationMessage(value) && value.type === "completionNotification") received.push(value.notice);
+    if (isNodeNotificationMessage(value) && value.type === "completionNotification") { received.push(value.notice); markers.push(value.focusTab); }
   });
   try {
-    await connected(receiver); await json(receiver, { type: "subscribeNotifications", enabled: true });
+    await connected(receiver); await json(receiver, { type: "subscribeNotifications", enabled: true, nativeTabFocus: true });
     await page.getByRole("button", { name: /消息中心/ }).click(); await page.getByRole("tab", { name: /通知/ }).click();
     const select = page.getByRole("combobox", { name: "系统通知接收端", exact: true });
     await select.selectOption({ label: `通知接收测试 ${info.project.name}` });
@@ -282,7 +282,19 @@ test("浏览器授权节点接收完成摘要，同一接收端不重复弹窗�
     // 关闭所有 Hub 页后，本机节点仍负责通知，原生页也不能恢复重复弹窗。
     await select.selectOption(created.id); await expect(select).toBeEnabled();
     const native = await context.newPage(); await native.goto(`${origin}/n/${source}/?hub-session=runtime-2`);
-    await expect(native.locator("#selected-session")).toHaveText("runtime-2"); await page.close();
+    await expect(native.locator("#selected-session")).toHaveText("runtime-2");
+    await expect(native).toHaveURL(/\?hub-tab=[0-9a-f]{32}&hub-session=runtime-2$/);
+    expect(markers[0]).toMatch(/^[0-9a-f]{32}$/);
+    expect(new URL(native.url()).searchParams.get("hub-tab")).not.toBe(markers[0]);
+    // 地址栏原本指向 runtime-2。在同一个文档中切到 runtime-1 后，定位依据必须是实际选中的会话。
+    const client = await native.locator("#preview").getAttribute("src"); expect(client).toBeTruthy();
+    const response = await native.request.post(`${origin}/n/${source}/api/action`, { headers: {
+      Origin: origin, "X-Opi-Client": new URL(client ?? "", origin).searchParams.get("client") ?? "",
+    }, data: { sessionId: "runtime-2", value: { action: "openSession", id: "runtime-1" } } });
+    expect(response.ok()).toBe(true);
+    await expect(native.locator("#selected-session")).toHaveText("runtime-1");
+    await expect(native).toHaveURL(`${origin}/n/${source}/?hub-tab=${markers[0]}&hub-session=runtime-2`);
+    await page.close();
     const presence = native.waitForResponse((response) => response.url().endsWith("/_hub/notifications/presence"));
     await native.evaluate(() => { const now = Date.now; Date.now = () => now() + 20_000; window.dispatchEvent(new Event("focus")); });
     const status: unknown = await (await presence).json(); expect(object(status) && status.nodeNotifications).toBe(true);
