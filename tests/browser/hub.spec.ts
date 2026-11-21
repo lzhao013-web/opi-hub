@@ -1,5 +1,20 @@
 import { test, expect } from "@playwright/test";
 
+test("浏览器能加载已登录设备的 manifest，未登录仍返回 401", async ({ page, context, request }) => {
+  await page.goto("/");
+  await page.getByLabel("中心密码").fill("test-password-1234");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: /全部设备/ }).click();
+  const card = page.locator(".device").filter({ has: page.getByRole("heading", { name: "开发台式机", exact: true }) });
+  const [tab] = await Promise.all([context.waitForEvent("page"), card.getByRole("link", { name: "打开 o-pi" }).click()]);
+  await expect(tab.locator("#name")).toHaveText("设备 A");
+  const cdp = await context.newCDPSession(tab);
+  const manifest = await cdp.send("Page.getAppManifest");
+  expect(manifest.url).toBe(new URL("site.webmanifest", tab.url()).href);
+  expect(manifest.data).toBe(JSON.stringify({ name: "o-pi fixture" }));
+  expect((await request.get(manifest.url)).status()).toBe(401);
+});
+
 test("登录、配置签发、双设备 GUI 和审批互不串线", async ({ page, context }) => {
   const errors: string[] = [];
   context.on("page", (tab) => tab.on("pageerror", (error) => errors.push(error.message)));

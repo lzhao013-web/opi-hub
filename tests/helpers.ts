@@ -15,7 +15,7 @@ import { FakeExecution } from "./fake-execution.ts";
 import type { ModelOption } from "../src/shared/models.ts";
 
 export const PASSWORD = "test-password-1234";
-const html = `<!doctype html><html><head><meta charset="utf-8"><title>o-pi fixture</title></head><body><h1 id="name">连接中</h1><p id="selected-session"></p><p id="selected-cwd"></p><p id="result"></p><p id="socket"></p><img id="preview" alt="文件预览"><form><input id="prompt" aria-label="消息"><button>发送</button></form><button id="approve">允许</button><button id="create-dialog">创建审批</button><button id="create-input">创建输入</button><p id="approval"></p><script type="module" src="./app.js"></script></body></html>`;
+const html = `<!doctype html><html><head><meta charset="utf-8"><title>o-pi fixture</title><link rel="manifest" href="./site.webmanifest"></head><body><h1 id="name">连接中</h1><p id="selected-session"></p><p id="selected-cwd"></p><p id="result"></p><p id="socket"></p><img id="preview" alt="文件预览"><form><input id="prompt" aria-label="消息"><button>发送</button></form><button id="approve">允许</button><button id="create-dialog">创建审批</button><button id="create-input">创建输入</button><p id="approval"></p><script type="module" src="./app.js"></script></body></html>`;
 const app = `
 const socket = new WebSocket(location.origin.replace(/^http/, 'ws') + '/api/events');
 let client;
@@ -121,6 +121,9 @@ export async function fakeOpi(name: string) {
       if (url.pathname === "/health") { res.end("ok"); return; }
       if (url.pathname === "/") {
         res.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "default-src 'self'; script-src 'self'; img-src 'self'; connect-src 'self'", "Referrer-Policy": "no-referrer" }); res.end(html); return;
+      }
+      if (url.pathname === "/site.webmanifest") {
+        res.setHeader("Content-Type", "application/manifest+json"); res.end(JSON.stringify({ name: "o-pi fixture" })); return;
       }
       if (url.pathname === "/app.js") { res.setHeader("Content-Type", "text/javascript"); res.end(app); return; }
       if (url.pathname === "/assets/cache-Ab12_cd3.js") {

@@ -22,7 +22,14 @@ export function resolveDevice(req: IncomingMessage, url: URL, origin: string): {
 }
 export function adaptHtml(html: string, id: string): string {
   const prefix = devicePrefix(id);
-  const adapted = html.replace(/\b(src|href)=(['"])\/(?!\/)/g, `$1=$2${prefix}`);
+  const adapted = html
+    .replace(/<link\s[^>]*>/gi, (tag) => {
+      const isLocalManifest = /\srel\s*=\s*(['"])manifest\1/i.test(tag)
+        && /\shref\s*=\s*(['"])(?:\.?\/)?site\.webmanifest\1/i.test(tag);
+      if (!isLocalManifest || /\scrossorigin(?=[\s=/>])/i.test(tag)) return tag;
+      return tag.replace(/^<link/i, '$& crossorigin="use-credentials"');
+    })
+    .replace(/\b(src|href)=(['"])\/(?!\/)/g, `$1=$2${prefix}`);
   const bridge = `<link rel="stylesheet" href="/_hub/bridge.css"><script src="/_hub/bridge.js" data-prefix="${prefix}"></script>`;
   if (!/<head(?:\s[^>]*)?>/i.test(adapted)) throw new Error("目标没有返回 o-pi HTML 页面");
   return adapted.replace(/<head(?:\s[^>]*)?>/i, (head) => head + bridge);
