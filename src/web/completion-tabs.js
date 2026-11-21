@@ -39,23 +39,23 @@ export function completionTabs(matches, show = () => {}) {
       const request = `${id}:${++sequence}`;
       return new Promise(resolve => {
         let tab;
-        const finish = (opened) => {
+        const finish = (outcome) => {
           clearTimeout(timer);
           channel.removeEventListener("message", receive);
-          resolve(opened);
+          resolve(outcome);
         };
         const receive = ({ data }) => {
           if (data?.request !== request) return;
           if (!tab && data.type === "offer" && typeof data.tab === "string" && data.tab) {
-            if (!current()) return finish(false);
+            if (!current()) return finish("cancelled");
             tab = data.tab;
             const deadline = Date.now() + focusWait;
             clearTimeout(timer);
-            timer = setTimeout(() => finish(false), focusWait + 100);
+            timer = setTimeout(() => finish("focus-unconfirmed"), focusWait + 100);
             channel.postMessage({ type: "focus", request, tab, target, deadline });
-          } else if (tab && data.type === "opened" && data.tab === tab) finish(true);
+          } else if (tab && data.type === "opened" && data.tab === tab) finish("opened");
         };
-        let timer = setTimeout(() => finish(false), 200);
+        let timer = setTimeout(() => finish("no-offer"), 200);
         channel.addEventListener("message", receive);
         channel.postMessage({ type: "probe", request, target });
       });

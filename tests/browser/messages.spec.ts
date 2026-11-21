@@ -109,6 +109,9 @@ test("系统完成链接登录后打开原会话，计划任务定位结果，�
 
   await page.goto(link(planned));
   await expect(page.locator(`.run-card[data-run-id="${run.id}"]`)).toHaveClass(/highlighted-run/);
+  await page.getByRole("button", { name: /消息中心/ }).click();
+  await page.getByRole("tab", { name: /通知/ }).click();
+  await expect(page.locator("#completion-last-jump")).toContainText("未尝试复用：当前标签页已有浏览历史");
   await page.goto(link("expired-completion"));
   await expect(page.getByRole("status").filter({ hasText: "这条完成通知已不在列表中" })).toBeVisible();
 });
@@ -144,6 +147,7 @@ test("系统结果优先复用原会话和已有 Hub 页，不切换其他会话
   target.on("framenavigated", frame => { if (frame === target.mainFrame()) navigations++; });
   const firstLanding = await launch(link(ordinary));
   await expect.poll(() => firstLanding.isClosed()).toBe(true);
+  await expect(page.locator("#completion-last-jump")).toContainText("匹配页已确认切到前台");
   expect(navigations).toBe(0);
   expect(opens).toEqual([target]);
   await expect(target.locator("#selected-session")).toHaveText("runtime-1");
@@ -164,6 +168,21 @@ test("系统结果优先复用原会话和已有 Hub 页，不切换其他会话
   const fallback = await launch(link(ordinary));
   await expect(fallback.locator("#selected-session")).toHaveText("runtime-1");
   expect(refused).toBe(1);
+  await page.getByRole("button", { name: /消息中心/ }).click();
+  await page.getByRole("tab", { name: /通知/ }).click();
+  const diagnostic = page.locator("#completion-last-jump");
+  await expect(diagnostic).toBeVisible();
+  await expect(diagnostic).toContainText("已找到匹配页，但未收到切到前台的确认");
+
+  await fallback.close(); await target.close();
+  const unmatched = await launch(link(ordinary));
+  await expect(unmatched.locator("#selected-session")).toHaveText("runtime-1");
+  await expect(diagnostic).toContainText("限时内未收到匹配页的回应");
+  await page.reload();
+  await page.getByRole("button", { name: /消息中心/ }).click();
+  await page.getByRole("tab", { name: /通知/ }).click();
+  await expect(diagnostic).toBeVisible();
+  await expect(diagnostic).toContainText("限时内未收到匹配页的回应");
 });
 
 test("消息中心分区、前台目标抑制与跨标签通知去重，别的会话在前台不漏报", async ({ page, context }) => {

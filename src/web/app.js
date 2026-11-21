@@ -37,6 +37,17 @@ const resultTabs = completionTabs(
 );
 const text = (id, value) => { $(id).textContent = value; };
 function message(id, value) { text(id, value); $(id).hidden = !value; }
+const lastJumpKey = "opi-hub.last-completion-jump";
+function recordJump(result) {
+  const value = `最近一次完成通知跳转（${new Date().toLocaleString("zh-CN", { hour12: false })}）：${result}`;
+  message("completion-last-jump", value);
+  // 存储空间已满也不能阻止打开会话。
+  try { localStorage.setItem(lastJumpKey, value); }
+  catch { console.info(value); }
+}
+window.addEventListener("storage", ({ key, newValue }) => {
+  if (authenticated && key === lastJumpKey) message("completion-last-jump", newValue ?? "");
+});
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json", ...options.headers } });
   const value = await response.json();
@@ -57,6 +68,7 @@ function showLogin() {
 async function showWorkspace() {
   authenticated = true; $("login").hidden = true; $("workspace").hidden = false;
   $("password").value = "";
+  message("completion-last-jump", localStorage.getItem(lastJumpKey) ?? "");
   messages.start(); openDesktopLink(true); await refresh();
 }
 function openRun(runId) {
@@ -83,18 +95,23 @@ async function openCompletionLink(id, hash, reuse) {
     if (!current()) return;
     const notice = notices.find(item => item.id === id);
     if (!notice) {
+      recordJump("未尝试复用：找不到这条完成通知的记录。");
       message("completion-location-status", "这条完成通知已不在列表中，无法定位原结果。");
       return;
     }
     if (reuse && window.history.length === 1) {
       const target = notice.runId ? { runId: notice.runId } : { deviceId: notice.deviceId, sessionId: notice.sessionId };
-      const opened = await resultTabs.reuse(target, current);
-      if (!current()) return;
-      if (opened) {
+      const outcome = await resultTabs.reuse(target, current);
+      if (!current() || outcome === "cancelled") return;
+      if (outcome === "opened") {
+        recordJump("匹配页已确认切到前台。");
         message("completion-location-status", "已在已有标签页打开结果。");
         if (window.history.length === 1) window.close();
         return;
       }
+      recordJump(outcome === "no-offer" ? "限时内未收到匹配页的回应。" : "已找到匹配页，但未收到切到前台的确认。");
+    } else {
+      recordJump(reuse ? "未尝试复用：当前标签页已有浏览历史。" : "未尝试复用：完成链接在已有 Hub 页面内打开。");
     }
     message("completion-location-status", "");
     if (notice.runId) openRun(notice.runId);
