@@ -113,7 +113,7 @@ Windows 使用开始菜单登记的 Windows PowerShell 应用标识，启动和�
 bun run node --config ./node.json --windows-approvals
 ```
 
-Windows 开关为当前用户注册 `opi-hub-approval:` 点击入口，不需要管理员权限。如需删除注册，运行 `reg delete HKCU\Software\Classes\opi-hub-approval /f`。
+Windows 开关为当前用户注册 `opi-hub-approval:` 点击入口，不需要管理员权限。点击审批按钮时运行 `%LOCALAPPDATA%\opi-hub` 下的无控制台程序。如需删除注册，运行 `reg delete HKCU\Software\Classes\opi-hub-approval /f`。
 
 Linux 桌面：
 

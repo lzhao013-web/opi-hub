@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
 import { add, fixture, managedConfig } from "./helpers.ts";
 import { startNode } from "../src/node/agent.ts";
-import { approvalClickUri, openWindowsApprovalClicks } from "../src/node/windows-approval-clicks.ts";
+import { approvalClickUri, openWindowsApprovalClicks, prepareWindowsApprovalLauncher } from "../src/node/windows-approval-clicks.ts";
 import { notificationCommand, type DesktopNotice } from "../src/node/system-notifications.ts";
 import { object } from "../src/shared/protocol.ts";
 
@@ -48,7 +49,12 @@ test("Windows 通知按钮回传仅本次允许和拒绝，旧按钮不处理新
       approval: { command: `echo '${id} & <测试>'`, cwd: "C:\\项目", items: [{ action: "read", kind: "file", target: "a.txt", reason: "测试" }] },
       options: ["Allow once", "Always allow similar", "Deny", "Deny with instruction"].map((value) => ({ label: value, value })),
     });
-    const click = (uri: string) => promisify(execFile)(process.execPath, [fileURLToPath(new URL("../src/cli.ts", import.meta.url)), "notification-click", uri], { windowsHide: true, timeout: 5000 });
+    const launcher = await prepareWindowsApprovalLauncher(path.join(env.directory, "desktop-notifications"));
+    const binary = await readFile(launcher);
+    const pe = binary.readUInt32LE(0x3c);
+    assert.equal(binary.toString("ascii", pe, pe + 4), "PE\0\0");
+    assert.equal(binary.readUInt16LE(pe + 24 + 68), 2, "回调必须是 Windows GUI 子系统，不能由系统分配控制台");
+    const click = (uri: string) => promisify(execFile)(launcher, [uri], { timeout: 5000 });
     const buttons = (index: number) => {
       const notice = notices[index];
       assert.ok(notice);

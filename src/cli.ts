@@ -8,7 +8,7 @@ import { startHub } from "./hub/server.ts";
 import { startNode } from "./node/agent.ts";
 import { validateNodeConfig } from "./node/config.ts";
 import { createLinuxApprovalNotifier } from "./node/system-notifications.ts";
-import { forwardWindowsApprovalClick, openWindowsApprovalClicks, registerWindowsApprovalHandler } from "./node/windows-approval-clicks.ts";
+import { openWindowsApprovalClicks, registerWindowsApprovalHandler } from "./node/windows-approval-clicks.ts";
 
 const usage = `opi-hub — o-pi 多设备 Web 入口
 
@@ -20,11 +20,6 @@ bun run node --config ./node.json         连接中心，配置由管理界面�
 
 节点根据 command 配置自动后台启动 opi-web，不支持外部后端或 target 配置。`;
 async function main(): Promise<void> {
-  if (process.argv[2] === "notification-click") {
-    const uri = process.argv[3];
-    if (process.platform === "win32" && process.argv.length === 4 && uri) await forwardWindowsApprovalClick(uri);
-    return;
-  }
   const { positionals, values } = parseArgs({
     args: process.argv.slice(2), allowPositionals: true, strict: true,
     options: { data: { type: "string", default: "./data" }, host: { type: "string", default: "127.0.0.1" },
@@ -64,7 +59,7 @@ async function main(): Promise<void> {
     const linuxSender = values["linux-approvals"] ? await createLinuxApprovalNotifier() : undefined;
     const clicks = values["windows-approvals"] ? await openWindowsApprovalClicks() : undefined;
     try {
-      if (clicks) await registerWindowsApprovalHandler(fileURLToPath(import.meta.url));
+      if (clicks) await registerWindowsApprovalHandler();
       const approvals = clicks ? { kind: "windows", clicks } as const : linuxSender ? { kind: "linux", send: linuxSender } as const : undefined;
       const node = startNode(config, console.log, undefined, approvals);
       await Promise.race([untilSignal(), node.closed]); await node.close();
