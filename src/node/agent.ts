@@ -12,15 +12,20 @@ import { isTaskCommand, type TaskReply } from "../shared/tasks.ts";
 import { isNodeNotificationMessage, type NotificationSubscription } from "../shared/notifications.ts";
 import { LocalNotifications } from "./notifications.ts";
 import { createSystemNotifier, type NotificationSender } from "./system-notifications.ts";
+import type { WindowsApprovalClicks } from "./windows-approval-clicks.ts";
 
 export interface NodeAgent { ready: Promise<void>; closed: Promise<void>; close(): Promise<void> }
-export function startNode(input: unknown, log: (message: string) => void = console.log, notificationFactory: () => Promise<NotificationSender | null> = createSystemNotifier): NodeAgent {
+export function startNode(input: unknown, log: (message: string) => void = console.log, notificationFactory: () => Promise<NotificationSender | null> = createSystemNotifier, approvalClicks?: WindowsApprovalClicks): NodeAgent {
   const config = validateNodeConfig(input);
   const notifications = new LocalNotifications(config.notifications === true, log, notificationFactory);
   const abort = new AbortController();
   const sockets = new Set<WebSocket>(); const reads = new Set<AbortController>();
   const ready = Promise.withResolvers<void>();
   let first = true; let currentControl: WebSocket | undefined;
+  approvalClicks?.onClick((answer) => {
+    const control = currentControl;
+    if (control?.readyState === WebSocket.OPEN) void json(control, answer).catch(() => control.terminate());
+  });
   const runtime = new NodeRuntime(config, (value) => {
     const control = currentControl;
     if (!control || control.readyState !== WebSocket.OPEN) return;
@@ -63,7 +68,9 @@ export function startNode(input: unknown, log: (message: string) => void = conso
             const request = parse(raw.toString());
             if (isNodeNotificationMessage(request)) {
               if (request.type === "completionNotification") void notifications.receive(request.notice);
-              else if (config.notifications) log(request.active ? "已订阅中心完成提醒" : "完成提醒未授权：请在消息中心绑定本机节点");
+              else if (request.type === "approvalNotification") {
+                if (approvalClicks) void notifications.receive({ ...request.notice, receiverId: approvalClicks.receiverId });
+              } else if (config.notifications) log(request.active ? "已订阅中心系统通知" : "系统通知未授权：请在消息中心绑定本机节点");
               return;
             }
             if (isTaskCommand(request)) {
@@ -132,7 +139,11 @@ export function startNode(input: unknown, log: (message: string) => void = conso
           } catch { control.close(1008, "Invalid control frame"); }
         });
         currentControl = control; await json(control, { type: "management", value: runtime.snapshot }); await report(control);
-        if (await notifications.ready) await json(control, { type: "subscribeNotifications", enabled: true } satisfies NotificationSubscription);
+        if (await notifications.ready) {
+          const subscription: NotificationSubscription = { type: "subscribeNotifications", enabled: true };
+          if (approvalClicks) subscription.approvals = true;
+          await json(control, subscription);
+        }
         if (first) { first = false; ready.resolve(); }
         statusTimer = setInterval(() => {
           if (Date.now() - heartbeat > 45_000) control.terminate(); else void report(control).catch(() => control.terminate());

@@ -89,6 +89,28 @@ test("Windows 命令不再使用未注册的固定应用标识", () => {
   assert.ok(source.includes("Get-StartApps")); assert.ok(source.includes(".AppID"));
 });
 
+test("Windows 原生 XML 将通知正文作为文字，并为审批按钮设置协议激活", { skip: process.platform !== "win32", timeout: 15_000 }, () => {
+  const id = "00000000-0000-0000-0000-000000000001";
+  const receiverId = "00000000-0000-0000-0000-000000000002";
+  const plan = notificationCommand("win32", {}, { id, receiverId, title: "审批", body: 'echo "<&"' });
+  assert.ok(plan?.input);
+  const source = script(plan.args);
+  const xml = source.slice(source.indexOf("$data ="), source.indexOf("$toast ="));
+  const probe = `[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$ErrorActionPreference = 'Stop'
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+${xml}
+[Console]::WriteLine($xml.GetXml())`;
+  const result = childProcess.spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(probe, "utf16le").toString("base64")], {
+    input: plan.input, encoding: "utf8", windowsHide: true, timeout: 10_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /<text[^>]*>echo "&lt;&amp;"<\/text>/);
+  assert.ok(result.stdout.includes(`content="仅本次允许" arguments="opi-hub-approval://${receiverId}/${id}/allow" activationType="protocol"`));
+  assert.ok(result.stdout.includes(`content="拒绝" arguments="opi-hub-approval://${receiverId}/${id}/deny" activationType="protocol"`));
+});
+
 test("Windows 原生无弹窗探测拒绝仅有显示名称或错误标识的应用", { skip: process.platform !== "win32", timeout: 15_000 }, async (t) => {
   const calls = windowsEnvironment(t); await createSystemNotifier();
   const probe = calls[0]; assert.ok(probe);

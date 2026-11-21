@@ -10,7 +10,7 @@ import type { ManagementState } from "../src/shared/management.ts";
 import { OpiClient } from "../src/adapters/opi/client.ts";
 import { startNode } from "../src/node/agent.ts";
 import { startHub } from "../src/hub/server.ts";
-import { isCompletionNotice, type HubNotice, type NodeCompletionNotice } from "../src/shared/notifications.ts";
+import { isCompletionNotice, isNodeCompletionNotice, type HubNotice, type NodeCompletionNotice } from "../src/shared/notifications.ts";
 import { object, json } from "../src/shared/protocol.ts";
 
 async function until(check: () => boolean | Promise<boolean>) {
@@ -47,7 +47,7 @@ test("省略 notifications 时默认检测并订阅，仍须中心显式授权�
 
 test("执行节点通过原控制连接接收已授权的跨设备新通知，与浏览器共享去重和前台抑制", { timeout: 20_000 }, async () => {
   const received: NodeCompletionNotice[] = [];
-  const env = await fixture(0, { b: async (notice) => { received.push(notice); } });
+  const env = await fixture(0, { b: async (notice) => { assert.ok(isNodeCompletionNotice(notice)); received.push(notice); } });
   const client = new OpiClient(new URL(env.fakeA.url), () => {});
   const destination = crypto.randomUUID();
   const post = (path: string, body: unknown, cookie = env.cookie, origin = env.hub.url) => fetch(env.hub.url + path, {
@@ -96,7 +96,7 @@ test("执行节点通过原控制连接接收已授权的跨设备新通知，�
 
 test("来源节点重连的首份目录只恢复记录，不把离线期间的完成批量补弹", { timeout: 15_000 }, async () => {
   const received: NodeCompletionNotice[] = [];
-  const env = await fixture(0, { b: async (notice) => { received.push(notice); } });
+  const env = await fixture(0, { b: async (notice) => { assert.ok(isNodeCompletionNotice(notice)); received.push(notice); } });
   const sockets: WebSocket[] = [];
   try {
     const source = await add(env.hub.url, env.cookie, "重连来源"); const destination = crypto.randomUUID();
@@ -121,7 +121,7 @@ test("来源节点重连的首份目录只恢复记录，不把离线期间的�
 
 test("绑定持久化，中心重启和节点控制重连不补弹旧通知，也不重启托管进程", { timeout: 20_000 }, async () => {
   const received: NodeCompletionNotice[] = [];
-  const env = await fixture(0, { b: async (notice) => { received.push(notice); } });
+  const env = await fixture(0, { b: async (notice) => { assert.ok(isNodeCompletionNotice(notice)); received.push(notice); } });
   const client = new OpiClient(new URL(env.fakeA.url), () => {});
   let replacement: Awaited<ReturnType<typeof startHub>> | undefined;
   try {

@@ -2,9 +2,11 @@ import { execFile, spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
-import type { NodeCompletionNotice } from "../shared/notifications.ts";
+import type { NodeApprovalNotice, NodeCompletionNotice } from "../shared/notifications.ts";
+import { approvalClickUri } from "./windows-approval-clicks.ts";
 
-export type NotificationSender = (notice: NodeCompletionNotice, signal: AbortSignal) => Promise<void>;
+export type DesktopNotice = NodeCompletionNotice | (NodeApprovalNotice & { receiverId: string });
+export type NotificationSender = (notice: DesktopNotice, signal: AbortSignal) => Promise<void>;
 export interface NotificationCommand { program: string; args: string[]; input?: string }
 const appleScript = 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run';
 // 探测和发送共用注册身份与权限检查，不能把能启动 PowerShell 当作通知可用。
@@ -34,6 +36,18 @@ $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text></text><text
 $text = $xml.GetElementsByTagName('text')
 $text.Item(0).AppendChild($xml.CreateTextNode([string]$data.title)) | Out-Null
 $text.Item(1).AppendChild($xml.CreateTextNode([string]$data.body)) | Out-Null
+if ($data.actions) {
+  $text.Item(1).SetAttribute('hint-maxLines', '4')
+  $actions = $xml.CreateElement('actions')
+  foreach ($button in $data.actions) {
+    $action = $xml.CreateElement('action')
+    $action.SetAttribute('content', [string]$button.label)
+    $action.SetAttribute('arguments', [string]$button.uri)
+    $action.SetAttribute('activationType', 'protocol')
+    $actions.AppendChild($action) | Out-Null
+  }
+  $xml.DocumentElement.AppendChild($actions) | Out-Null
+}
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 $notifier.Show($toast)
 Assert-NotificationSetting $false
@@ -53,7 +67,16 @@ ${windowsSetup}${body}
 `;
   return { program: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], input };
 }
-export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: NodeCompletionNotice): NotificationCommand | null {
+export function notificationCommand(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, notice: DesktopNotice): NotificationCommand | null {
+  if ("receiverId" in notice) {
+    if (platform !== "win32" || env.SESSIONNAME?.toLowerCase() === "services") return null;
+    const { title, body, receiverId, id } = notice;
+    const actions = [
+      { label: "仅本次允许", uri: approvalClickUri(receiverId, id, "allow") },
+      { label: "拒绝", uri: approvalClickUri(receiverId, id, "deny") },
+    ];
+    return windowsCommand(windowsToast, JSON.stringify({ title, body, actions }));
+  }
   const clean = (text: string) => Array.from(text.replace(/[\u0000-\u001f\u007f]/g, " ")).slice(0, 256).join("");
   const title = "o-pi 执行已完成"; const body = `${clean(notice.deviceName)} · ${clean(notice.title) || "未命名会话"}`;
   if (platform === "linux" && (env.TERMUX_VERSION || env.PREFIX?.startsWith("/data/data/com.termux/"))) {

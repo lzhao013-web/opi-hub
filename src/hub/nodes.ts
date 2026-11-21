@@ -7,7 +7,7 @@ import { buffer } from "../shared/sockets.ts";
 import { isSessionResponse } from "../shared/session-creation.ts";
 import { SessionRequests } from "./session-requests.ts";
 import { isTaskReply, blockingTask, type TaskInput, type TaskRecord } from "../shared/tasks.ts";
-import { isNotificationSubscription } from "../shared/notifications.ts";
+import { isNotificationAnswer, isNotificationSubscription } from "../shared/notifications.ts";
 import type { NodeNotifications } from "./node-notifications.ts";
 
 interface Connection { id: string; socket: WebSocket; report?: NodeReport; management?: ManagementState; seen: number; baseline: boolean }
@@ -32,9 +32,9 @@ export class Nodes {
   }
   private identity(node: Connection): string { return `${node.id}:${node.report?.backend.generation ?? 0}`; }
   management(id: string): ManagementState | undefined { return this.connections.get(id)?.management; }
-  async respond(deviceId: string, sessionId: string, dialogId: string, value: string | null, signal: AbortSignal): Promise<void> {
+  async respond(deviceId: string, sessionId: string, dialogId: string, value: string | null, signal?: AbortSignal): Promise<void> {
     const node = this.connections.get(deviceId);
-    if (!node || signal.aborted) throw new Error("设备离线或请求已取消");
+    if (!node || signal?.aborted) throw new Error("设备离线或请求已取消");
     if (node.management?.state !== "ready" || !node.management.interactions.some((item) => item.sessionId === sessionId && item.id === dialogId)) throw new Error("交互已结束或状态未就绪，请刷新");
     const key = JSON.stringify([deviceId, sessionId, dialogId]);
     if (this.answering.has(key)) throw new Error("此交互正在提交，请等待结果");
@@ -42,13 +42,13 @@ export class Nodes {
     await new Promise<void>((resolve, reject) => {
       const finish = (error?: Error) => {
         if (!this.responses.delete(id)) return;
-        clearTimeout(timer); signal.removeEventListener("abort", abort); this.answering.delete(key);
+        clearTimeout(timer); signal?.removeEventListener("abort", abort); this.answering.delete(key);
         if (error) reject(error); else resolve();
       };
       const abort = () => finish(new Error("连接中断，请检查交互是否已处理后再决定是否重试"));
       const timer = setTimeout(() => finish(new Error("交互提交超时，请检查原会话状态，不要自动重试")), 30_000);
       this.answering.add(key); this.responses.set(id, { node, deviceId, finish });
-      signal.addEventListener("abort", abort, { once: true });
+      signal?.addEventListener("abort", abort, { once: true });
       void json(node.socket, { type: "respond", id, sessionId, dialogId, value } satisfies RespondCommand).catch((error: unknown) => finish(error instanceof Error ? error : new Error("提交失败")));
     });
   }
@@ -122,9 +122,16 @@ export class Nodes {
         else if (isManagementMessage(value)) {
           const initial = !node.baseline;
           if (value.value.state === "ready") node.baseline = true;
+          const previous = node.management;
           node.management = value.value; this.onManagement(id, value.value, initial);
+          this.notifications?.offerApprovals(id, value.value, previous);
         }
-        else if (isNotificationSubscription(value)) this.notifications?.subscribe(id, node.socket, value.enabled);
+        else if (isNotificationSubscription(value)) this.notifications?.subscribe(id, node.socket, value.enabled, value.approvals);
+        else if (isNotificationAnswer(value)) {
+          const answer = this.notifications?.takeApproval(id, socket, value);
+          // 审批已在别处处理或设备离线时，通知点击不重试。
+          if (answer) void this.respond(answer.deviceId, answer.sessionId, answer.dialogId, answer.value).catch(() => {});
+        }
         else if (isSessionResponse(value) || isBackendReply(value) || isTaskReply(value)) this.sessionRequests.receive(node.socket, value);
         else if (isHistoryReply(value)) {
           const pending = this.histories.get(value.id);

@@ -1,10 +1,9 @@
-import type { NodeCompletionNotice } from "../shared/notifications.ts";
-import { createSystemNotifier, type NotificationSender } from "./system-notifications.ts";
+import { createSystemNotifier, type DesktopNotice, type NotificationSender } from "./system-notifications.ts";
 
 function detail(error: unknown): string {
   return error instanceof Error ? error.message : "未知错误";
 }
-/** 只消费中心推送的新完成事实，重连复用有界去重集合，不重试系统弹窗。 */
+/** 重连复用有界去重集合，不重试系统弹窗。 */
 export class LocalNotifications {
   readonly ready: Promise<boolean>;
   private sender: NotificationSender | null = null;
@@ -21,17 +20,17 @@ export class LocalNotifications {
       return sender !== null;
     }).catch((error: unknown) => { this.log(`本机通知初始化失败：${detail(error)}，未订阅中心提醒`); return false; }) : Promise.resolve(false);
   }
-  async receive(notice: NodeCompletionNotice): Promise<void> {
+  async receive(notice: DesktopNotice): Promise<void> {
     if (!await this.ready || this.controller.signal.aborted || this.seen.has(notice.id)) return;
     this.seen.add(notice.id);
     if (this.seen.size > 100) { const oldest = this.seen.values().next().value; if (oldest !== undefined) this.seen.delete(oldest); }
-    if (this.pending >= 32) { this.log("本机通知队列已满，本条不弹出，完成记录仍保留在中心"); return; }
+    if (this.pending >= 32) { this.log("本机通知队列已满，本条不弹出，可在消息中心查看"); return; }
     this.pending++;
     const sender = this.sender;
     this.tail = this.tail.then(async () => {
       if (!this.controller.signal.aborted && sender) await sender(notice, this.controller.signal);
     }).catch((error: unknown) => {
-      if (!this.controller.signal.aborted) this.log(`本机通知发送失败：${detail(error)}，未自动重试，可在消息中心查看完成记录`);
+      if (!this.controller.signal.aborted) this.log(`本机通知发送失败：${detail(error)}，未自动重试，可在消息中心查看`);
     }).finally(() => { this.pending--; });
     await this.tail;
   }
