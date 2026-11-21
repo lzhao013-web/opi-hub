@@ -1,2 +1,3 @@
 .hub-native-error { position: relative; z-index: 100; padding: 12px 20px; background: #2c2c2e; color: #f2f2f7; font: 14px/1.6 system-ui,sans-serif; overflow-wrap: anywhere; }
 .hub-native-error a { color: #70b4ff; text-decoration: underline; }
+.hub-native-error button { margin-inline-start: 12px; padding: 2px 8px; font: inherit; color: inherit; background: transparent; border: 1px solid #98989d; border-radius: 4px; cursor: pointer; }

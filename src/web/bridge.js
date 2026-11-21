@@ -9,6 +9,8 @@
   let destination = localStorage.getItem("opi-hub.notification-destination");
   if (!destination) { destination = viewerId.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, "$1-$2-$3-$4-$5"); localStorage.setItem("opi-hub.notification-destination", destination); }
   let selectedId = null; let lastHub = 0; let nodeNotificationsUntil = 0; let closed = false; let sequence = 0;
+  let waitingForTarget = Boolean(targetId);
+  let targetError;
   const presence = (leaving = false) => {
     if (closed) return;
     const value = { type: "viewer", id: viewerId, deviceId: prefix.split("/")[2], sessionId: selectedId, focused: !leaving && document.visibilityState === "visible" && document.hasFocus() };
@@ -28,8 +30,11 @@
     const banner = document.createElement("aside");
     banner.className = "hub-native-error"; banner.setAttribute("role", "alert");
     const back = document.createElement("a"); back.href = "/"; back.textContent = "返回会话管理";
-    banner.append(document.createTextNode(message + " "), back);
+    const dismiss = document.createElement("button"); dismiss.type = "button"; dismiss.textContent = "关闭";
+    dismiss.addEventListener("click", () => banner.remove());
+    banner.append(document.createTextNode(message + " "), back, dismiss);
     document.body.prepend(banner);
+    return banner;
   };
   const route = (input) => {
     const url = new URL(input, location.href);
@@ -57,8 +62,17 @@
         if (delivery.kind === "notification" && delivery.value?.kind === "completed" && (Date.now() - lastHub < 12_000 || Date.now() < nodeNotificationsUntil)) { event.stopImmediatePropagation(); return; }
         if ((delivery.kind !== undefined && delivery.kind !== "frame") || !Array.isArray(delivery.events)) return;
         for (const item of delivery.events) {
-          if (item.type === "selected") { selectedId = item.session?.id ?? null; presence(); }
-          if (targetId && item.type === "selected" && item.session === null) openError("目标会话已不存在，请刷新中心列表。");
+          if (item.type === "selected") {
+            selectedId = item.session?.id ?? null;
+            presence();
+            if (waitingForTarget) {
+              waitingForTarget = false;
+              if (item.session === null) targetError = openError("未能打开目标会话，请刷新中心列表。");
+            } else if (targetError && selectedId === targetId) {
+              targetError.remove();
+              targetError = undefined;
+            }
+          }
           if (!targetPath || item.type !== "client") continue;
           void fetch(prefix + "api/action", {
             method: "POST", headers: { "Content-Type": "application/json", "X-Opi-Client": item.id },
