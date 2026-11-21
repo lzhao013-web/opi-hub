@@ -6,6 +6,7 @@ import { CreateSessionView } from "./create-session.js";
 import { BackendControls, backendLabel } from "./backend.js";
 import { completionSessionUrl, MessageCenter } from "./messages.js";
 import { ScheduleView } from "./schedules.js";
+import { completionTabs } from "./completion-tabs.js";
 
 const $ = (id) => {
   const element = document.getElementById(id);
@@ -21,6 +22,7 @@ let authenticated = false;
 let timer;
 let pendingRead = 0;
 let approvalTarget = null;
+let completionLookup = null;
 const management = new ManagementView(request, refresh);
 const history = new HistoryStore(request, () => { if (authenticated) render(); });
 const navigation = new Navigation(selectScope);
@@ -29,6 +31,10 @@ const schedules = new ScheduleView(request);
 const messages = new MessageCenter(request, () => { if (authenticated) render(); }, openRun, showLogin, refresh);
 const creator = new CreateSessionView(request, refresh, () => { scope = null; view = "interactions"; messages.open("pending"); render(); });
 const views = new WorkspaceViews(history, selectScope, creator);
+const resultTabs = completionTabs(
+  target => Boolean(target.runId && authenticated && !completionLookup && !document.querySelector("dialog[open]")),
+  target => openRun(target.runId),
+);
 const text = (id, value) => { $(id).textContent = value; };
 function message(id, value) { text(id, value); $(id).hidden = !value; }
 async function request(url, options = {}) {
@@ -43,7 +49,7 @@ async function request(url, options = {}) {
 function showLogin() {
   authenticated = false; pendingRead++; clearTimeout(timer); management.clear(); history.clear(); views.clear(); navigation.clear(); creator.clear(); backendControls.clear(); schedules.clear(); messages.clear();
   overview = { devices: [], workspaces: [], sessions: [], interactions: [], creations: [] }; devices = []; scope = null; view = "overview";
-  approvalTarget = null; message("approval-location-status", ""); message("completion-location-status", "");
+  approvalTarget = null; completionLookup = null; message("approval-location-status", ""); message("completion-location-status", "");
   $("workspace").hidden = true; $("login").hidden = false;
   for (const dialog of document.querySelectorAll("dialog[open]")) dialog.close();
   $("password").focus();
@@ -51,25 +57,27 @@ function showLogin() {
 async function showWorkspace() {
   authenticated = true; $("login").hidden = true; $("workspace").hidden = false;
   $("password").value = "";
-  messages.start(); openDesktopLink(); await refresh();
+  messages.start(); openDesktopLink(true); await refresh();
 }
 function openRun(runId) {
   scope = null; view = "schedules"; render(); void schedules.focusRun(runId);
 }
-function openDesktopLink() {
+function openDesktopLink(reuse = false) {
   const hash = location.hash;
   const params = new URLSearchParams(hash.slice(1));
   const completion = params.get("completion");
   if (completion) {
-    void openCompletionLink(completion, hash);
+    void openCompletionLink(completion, hash, reuse);
     return false;
   }
   return openApprovalLink(params);
 }
-async function openCompletionLink(id, hash) {
+async function openCompletionLink(id, hash, reuse) {
+  const lookup = {};
+  completionLookup = lookup;
   approvalTarget = null; scope = null; view = "interactions"; messages.open("notifications");
   message("completion-location-status", "正在查找完成通知…"); render();
-  const current = () => authenticated && location.hash === hash && view === "interactions" && messages.tab === "notifications";
+  const current = () => authenticated && completionLookup === lookup && location.hash === hash && view === "interactions" && messages.tab === "notifications";
   try {
     const notices = await request("/_hub/notifications");
     if (!current()) return;
@@ -78,10 +86,21 @@ async function openCompletionLink(id, hash) {
       message("completion-location-status", "这条完成通知已不在列表中，无法定位原结果。");
       return;
     }
+    if (reuse && window.history.length === 1) {
+      const target = notice.runId ? { runId: notice.runId } : { deviceId: notice.deviceId, sessionId: notice.sessionId };
+      const opened = await resultTabs.reuse(target, current);
+      if (!current()) return;
+      if (opened) {
+        message("completion-location-status", "已在已有标签页打开结果。");
+        if (window.history.length === 1) window.close();
+        return;
+      }
+    }
     message("completion-location-status", "");
     if (notice.runId) openRun(notice.runId);
     else location.replace(completionSessionUrl(notice));
   } catch (error) { if (current()) message("completion-location-status", error.message); }
+  finally { if (completionLookup === lookup) completionLookup = null; }
 }
 function openApprovalLink(params) {
   const deviceId = params.get("device"); const sessionId = params.get("session"); const dialogId = params.get("approval");

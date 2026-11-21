@@ -1,6 +1,7 @@
 (() => {
   "use strict";
   const prefix = document.currentScript.dataset.prefix;
+  const deviceId = prefix.split("/")[2];
   const params = new URLSearchParams(location.search);
   const targetId = params.get("hub-session");
   const targetPath = params.get("hub-path");
@@ -11,9 +12,12 @@
   let selectedId = null; let lastHub = 0; let nodeNotificationsUntil = 0; let closed = false; let sequence = 0;
   let waitingForTarget = Boolean(targetId);
   let targetError;
+  void import("/_hub/completion-tabs.js").then(({ completionTabs }) => {
+    completionTabs(target => !closed && selectedId !== null && target.deviceId === deviceId && target.sessionId === selectedId);
+  });
   const presence = (leaving = false) => {
     if (closed) return;
-    const value = { type: "viewer", id: viewerId, deviceId: prefix.split("/")[2], sessionId: selectedId, focused: !leaving && document.visibilityState === "visible" && document.hasFocus() };
+    const value = { type: "viewer", id: viewerId, deviceId, sessionId: selectedId, focused: !leaving && document.visibilityState === "visible" && document.hasFocus() };
     channel.postMessage(value);
     // 查看状态是可过期的提示。断网或页面退出时上报失败不影响原生会话。
     const sent = ++sequence;

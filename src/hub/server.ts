@@ -57,6 +57,7 @@ export async function startHub(options: HubOptions) {
     "/_hub/create-session.js": { file: "create-session.js", type: "text/javascript; charset=utf-8" },
     "/_hub/backend.js": { file: "backend.js", type: "text/javascript; charset=utf-8" },
     "/_hub/messages.js": { file: "messages.js", type: "text/javascript; charset=utf-8" },
+    "/_hub/completion-tabs.js": { file: "completion-tabs.js", type: "text/javascript; charset=utf-8" },
     "/_hub/task-results.js": { file: "task-results.js", type: "text/javascript; charset=utf-8" },
     "/_hub/markdown.js": { file: "markdown.js", type: "text/javascript; charset=utf-8" },
     "/_hub/vendor/markdown-it.js": { file: "vendor/markdown-it.js", type: "text/javascript; charset=utf-8" },
