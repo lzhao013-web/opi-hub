@@ -16,7 +16,7 @@ import type { WindowsApprovalClicks } from "./windows-approval-clicks.ts";
 
 export interface NodeAgent { ready: Promise<void>; closed: Promise<void>; close(): Promise<void> }
 type ApprovalNotifications = { kind: "windows"; clicks: WindowsApprovalClicks } | { kind: "linux"; send: LinuxApprovalSender };
-export function startNode(input: unknown, log: (message: string) => void = console.log, notificationFactory: () => Promise<NotificationSender | null> = createSystemNotifier, approvals?: ApprovalNotifications, nativeTabFocus = false): NodeAgent {
+export function startNode(input: unknown, log: (message: string) => void = console.log, notificationFactory: () => Promise<NotificationSender | null> = createSystemNotifier, approvals?: ApprovalNotifications): NodeAgent {
   const config = validateNodeConfig(input);
   const notifications = new LocalNotifications(config.notifications === true, log, notificationFactory);
   const abort = new AbortController();
@@ -73,7 +73,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
             if (isNodeNotificationMessage(request)) {
               if (request.type === "completionNotification") {
                 const url = completionLinks ? completionUrl(config.hub, request.notice.id) : undefined;
-                const focusUrl = url && nativeTabFocus && request.focusTab ? new URL(`/n/${request.notice.deviceId}/?hub-tab=${request.focusTab}`, config.hub).href : undefined;
+                const focusUrl = url && config.windowsFocus && request.focusTab ? new URL(`/n/${request.notice.deviceId}/?hub-tab=${request.focusTab}`, config.hub).href : undefined;
                 void notifications.receive(request.notice, url, focusUrl);
               }
               else if (request.type === "approvalNotification") {
@@ -158,7 +158,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
         currentControl = control; await json(control, { type: "management", value: runtime.snapshot }); await report(control);
         if (await notifications.ready) {
           const subscription: NotificationSubscription = { type: "subscribeNotifications", enabled: true };
-          if (nativeTabFocus) subscription.nativeTabFocus = true;
+          if (config.windowsFocus) subscription.nativeTabFocus = true;
           if (approvals) { subscription.approvals = true; subscription.approvalLinks = true; }
           await json(control, subscription);
         }

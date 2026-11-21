@@ -37,10 +37,10 @@ test("省略 notifications 时默认检测并订阅，仍须中心显式授权�
   try {
     const entry = await add(env.hub.url, env.cookie, "默认通知接收端");
     const config = managedConfig(entry.config, env.fakeB.url, env.directory); delete config.notifications;
-    receiver = startNode(config, () => {}, async () => {
+    receiver = startNode({ ...config, windowsFocus: true }, () => {}, async () => {
       initialized++;
       return async (notice, _signal, url, focusUrl) => { delivered.push({ id: notice.id, url, focusUrl }); };
-    }, undefined, true);
+    });
     await receiver.ready; assert.equal(initialized, 1); assert.equal(await subscribed(env.hub.url, env.cookie, entry.id), false);
     const response = await fetch(env.hub.url + "/_hub/notifications/receiver", { method: "POST", headers: { Cookie: env.cookie, Origin: env.hub.url, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: entry.id, destination: crypto.randomUUID() }) });
     assert.equal(response.status, 200); await until(() => subscribed(env.hub.url, env.cookie, entry.id));

@@ -17,6 +17,12 @@ test("节点通知默认开启，显式 false 才关闭，只接受本机布尔�
   assert.throws(() => validateNodeConfig({ ...config, notifications: "true" }), /notifications/);
   assert.throws(() => validateNodeConfig({ ...config, notifications: { command: ["unsafe"] } }), /notifications/);
 });
+test("Windows 切页默认关闭，JSON 配置只接受布尔值", () => {
+  assert.equal(validateNodeConfig(config).windowsFocus, false);
+  assert.equal(validateNodeConfig({ ...config, windowsFocus: true }).windowsFocus, true);
+  assert.equal(validateNodeConfig({ ...config, windowsFocus: false }).windowsFocus, false);
+  assert.throws(() => validateNodeConfig({ ...config, windowsFocus: "true" }), /windowsFocus/);
+});
 test("节点通知协议只接收有界摘要，不允许正文和自定义命令混入", () => {
   assert.ok(isNodeCompletionNotice(notice()));
   assert.ok(isNodeNotificationMessage({ type: "completionNotification", notice: notice() }));

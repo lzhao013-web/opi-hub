@@ -51,15 +51,16 @@ async function main(): Promise<void> {
   }
   if (command === "node") {
     if (!values.config) throw new Error("需要 --config ./node.json");
-    const config: unknown = JSON.parse(await readFile(values.config, "utf8"));
-    if (values["windows-approvals"] && (process.platform !== "win32" || !validateNodeConfig(config).notifications)) {
+    const config = validateNodeConfig(JSON.parse(await readFile(values.config, "utf8")));
+    if (values["windows-focus"]) config.windowsFocus = true;
+    if (values["windows-approvals"] && (process.platform !== "win32" || !config.notifications)) {
       throw new Error("--windows-approvals 需要 Windows 和启用的节点通知");
     }
-    if (values["linux-approvals"] && (process.platform !== "linux" || !validateNodeConfig(config).notifications)) {
+    if (values["linux-approvals"] && (process.platform !== "linux" || !config.notifications)) {
       throw new Error("--linux-approvals 需要 Linux 和启用的节点通知");
     }
-    if (values["windows-focus"]) {
-      if (process.platform !== "win32" || !validateNodeConfig(config).notifications) throw new Error("--windows-focus 需要 Windows 和启用的节点通知");
+    if (config.windowsFocus) {
+      if (process.platform !== "win32" || !config.notifications) throw new Error("windowsFocus 或 --windows-focus 需要 Windows 和启用的节点通知");
       await registerWindowsFocusHandler();
     }
     const linuxSender = values["linux-approvals"] ? await createLinuxApprovalNotifier() : undefined;
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
     try {
       if (clicks) await registerWindowsApprovalHandler();
       const approvals = clicks ? { kind: "windows", clicks } as const : linuxSender ? { kind: "linux", send: linuxSender } as const : undefined;
-      const node = startNode(config, console.log, undefined, approvals, values["windows-focus"]);
+      const node = startNode(config, console.log, undefined, approvals);
       await Promise.race([untilSignal(), node.closed]); await node.close();
     } finally { clicks?.close(); }
     return;

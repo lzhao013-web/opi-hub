@@ -113,11 +113,11 @@ Windows 和支持 `notify-send --action` 的 Linux 桌面可以点击完成通�
 
 如果已找到会话页，但网页不能自行切到前台，可以让 Windows 接收节点使用浏览器的 `--focus` 功能。需要默认浏览器支持这个参数，例如 Chrome 143 或更高版本。对 Edge 和 ego lite 也会尝试该参数。会话页应使用默认浏览器打开，并与完成链接使用同一 Hub 地址和浏览器配置。无需扩展，也无需开放远程调试端口。
 
-1. 更新 Hub 服务端、前端和 Windows 接收节点。等节点上的任务结束，再在节点原有启动命令末尾加 `--windows-focus`，例如 `bun run node --config ./node.json --windows-focus`。已有的 `--windows-approvals` 可以保留。
+1. 更新 Hub 服务端、前端和 Windows 接收节点。在 Windows 接收节点的 JSON 配置顶层加入 `"windowsFocus": true`。等节点上的任务结束，用原命令重启，不需要启动脚本。也可以不改配置，在启动命令末尾加 `--windows-focus`。已有的 `--windows-approvals` 可以保留。
 2. 确认“消息中心 → 通知”仍绑定这个节点，刷新一次已打开的原会话页。地址栏出现 `hub-tab` 表示页面已取得当前会话的定位标记。
 3. 发起一次新执行，切到其他标签页，点击新产生的 Windows 完成通知。如果匹配到当前会话，浏览器直接选中原页。没有匹配页时打开原完成链接。计划任务、旧通知和其他默认浏览器仍走原链接。原生切回不经过中转页，不更新“最近一次完成通知跳转”。
 
-该开关只注册当前 Windows 用户的 `opi-hub-focus` 协议，不修改 HTTP(S) 关联。移除启动参数即可让新通知恢复普通链接。如需移除协议注册，运行 `reg delete HKCU\Software\Classes\opi-hub-focus /f`，此前使用这个协议的通知将无法打开。
+该开关只注册当前 Windows 用户的 `opi-hub-focus` 协议，不修改 HTTP(S) 关联。要恢复普通链接，删除 `windowsFocus` 或设为 `false`，并确认启动命令不含 `--windows-focus`，再重启接收节点。如需移除协议注册，运行 `reg delete HKCU\Software\Classes\opi-hub-focus /f`，此前使用这个协议的通知将无法打开。
 
 #### 系统通知直接审批（可选）
 

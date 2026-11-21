@@ -2,10 +2,10 @@ import path from "node:path";
 import { homedir } from "node:os";
 import { object } from "../shared/protocol.ts";
 
-export interface NodeConfig { hub: string; token: string; command: [string, ...string[]]; cwd: string; notifications?: boolean }
+export interface NodeConfig { hub: string; token: string; command: [string, ...string[]]; cwd: string; notifications?: boolean; windowsFocus?: boolean }
 export function validateNodeConfig(value: unknown): NodeConfig {
   if (!object(value)) throw new Error("无效的节点配置");
-  const unsupported = Object.keys(value).filter((key) => !["hub", "token", "command", "cwd", "notifications"].includes(key));
+  const unsupported = Object.keys(value).filter((key) => !["hub", "token", "command", "cwd", "notifications", "windowsFocus"].includes(key));
   if (unsupported.length) throw new Error(`不支持的节点配置字段：${unsupported.join(", ")}。仅支持托管后端，不接受 target。`);
   if (typeof value.hub !== "string" || typeof value.token !== "string" || !Array.isArray(value.command) || !value.command.every((part): part is string => typeof part === "string" && part.length > 0 && !part.includes("\0"))) throw new Error("节点配置需要 hub、token 和非空 command 数组");
   const [executable, ...args] = value.command;
@@ -15,6 +15,7 @@ export function validateNodeConfig(value: unknown): NodeConfig {
   if (!/^[a-f0-9-]{36}\.[A-Za-z0-9_-]{43}$/.test(value.token)) throw new Error("无效的设备凭据");
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || !value.cwd || value.cwd.includes("\0"))) throw new Error("cwd 需要是已有目录路径");
   if (value.notifications !== undefined && typeof value.notifications !== "boolean") throw new Error("notifications 必须是布尔值，不接受自定义通知命令");
+  if (value.windowsFocus !== undefined && typeof value.windowsFocus !== "boolean") throw new Error("windowsFocus 必须是布尔值");
   const command: [string, ...string[]] = [executable.includes("/") || executable.includes("\\") ? path.resolve(executable) : executable, ...args];
-  return { hub: hub.origin, token: value.token, command, cwd: value.cwd === undefined ? homedir() : path.resolve(value.cwd), notifications: value.notifications !== false };
+  return { hub: hub.origin, token: value.token, command, cwd: value.cwd === undefined ? homedir() : path.resolve(value.cwd), notifications: value.notifications !== false, windowsFocus: value.windowsFocus === true };
 }
