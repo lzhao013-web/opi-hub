@@ -35,7 +35,7 @@ export class AgentTask {
       await this.port.client.action({ action: "rename", name: `[schedule] ${this.input.name}` }, session.id, this.controller.signal);
       if (this.input.model) await this.port.client.action({ action: "model", provider: this.input.model.provider, id: this.input.model.id }, session.id, this.controller.signal);
       this.mode = "running"; this.update("running"); this.sent = true;
-      await this.port.client.action({ action: "prompt", text: this.input.prompt, images: [], behavior: "followUp" }, session.id, this.controller.signal);
+      await this.port.client.action({ action: "prompt", text: this.input.prompt, images: [], files: [], behavior: "followUp" }, session.id, this.controller.signal);
       await this.port.client.synchronize(this.controller.signal); await this.port.waitIdle(this.controller.signal);
       const result = this.port.execution.result;
       this.ending = true;

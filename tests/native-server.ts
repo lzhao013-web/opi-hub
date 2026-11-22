@@ -16,11 +16,12 @@ const cwd = path.join(directory, "workspace");
 const agentDir = path.join(home, ".pi", "agent");
 await mkdir(cwd, { recursive: true });
 await mkdir(path.join(directory, "remote-project"));
-await mkdir(path.join(directory, "trust-project"));
-await mkdir(path.join(directory, "scheduled-project"));
-await writeFile(path.join(directory, "scheduled-project", "AGENTS.md"), "# 定时任务隔离测试\n");
+for (const project of ["trust-project", "scheduled-project"]) {
+  const config = path.join(directory, project, ".pi");
+  await mkdir(config, { recursive: true });
+  await writeFile(path.join(config, "settings.json"), "{}\n");
+}
 await writeFile(path.join(directory, "remote-project", "remote.txt"), "remote project\n");
-await writeFile(path.join(directory, "trust-project", "AGENTS.md"), "# 隔离测试项目\n");
 await mkdir(path.join(agentDir, "configs"), { recursive: true });
 const savedDirectory = path.join(agentDir, "sessions", "saved-fixture"); await mkdir(savedDirectory, { recursive: true });
 const savedAt = new Date().toISOString(); const infoId = crypto.randomUUID();
