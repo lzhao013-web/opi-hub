@@ -3,7 +3,7 @@ import type { ModelOption } from "../../shared/models.ts";
 import type { RawData, WebSocket } from "ws";
 import { parse } from "../../shared/protocol.ts";
 import { buffer } from "../../shared/sockets.ts";
-import type { Interaction, ManagedSession, ManagementState } from "../../shared/management.ts";
+import { requireAnswerable, type Interaction, type ManagedSession, type ManagementState } from "../../shared/management.ts";
 import type { CompletionNotice } from "../../shared/notifications.ts";
 import { CompletionObserver } from "./completion.ts";
 import { OpiClient } from "./client.ts";
@@ -73,7 +73,8 @@ class Subscription {
   }
   async respond(sessionId: string, dialogId: string, value: string | null): Promise<void> {
     const client = this.client;
-    if (!this.connected || !client || !this.dialogs.some((dialog) => dialog.id === dialogId && dialog.sessionId === sessionId)) throw new Error("交互已结束或连接已变化，请刷新状态");
+    if (!this.connected || !client) throw new Error("交互连接已变化，请刷新状态");
+    requireAnswerable(this.dialogs, sessionId, dialogId);
     this.responses++;
     try { await client.action({ action: "dialog", id: dialogId, value }, sessionId, AbortSignal.timeout(25_000)); }
     finally { this.responses--; this.changed(); }

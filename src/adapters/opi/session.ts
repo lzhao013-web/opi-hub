@@ -1,4 +1,4 @@
-import type { Interaction } from "../../shared/management.ts";
+import { requireAnswerable, type Interaction } from "../../shared/management.ts";
 import { isAbsoluteDirectory } from "../../shared/session-creation.ts";
 import { OpiClient } from "./client.ts";
 import { queryDirectories } from "./directories.ts";
@@ -41,7 +41,7 @@ export class SessionPort {
     return session;
   }
   async respond(sessionId: string, id: string, value: string | null): Promise<void> {
-    if (!this.dialogs.some((dialog) => dialog.sessionId === sessionId && dialog.id === id)) throw new Error("会话交互已结束，请刷新状态");
+    requireAnswerable(this.dialogs, sessionId, id);
     const response = this.client.action({ action: "dialog", id, value }, sessionId, AbortSignal.timeout(25_000)); this.responses.add(response);
     try { await response; } finally { this.responses.delete(response); }
   }

@@ -16,6 +16,22 @@ test("识别源码和现有二进制的帧封装，未知封装明确报错", ()
   assert.deepEqual(decodeFrame({ ...frame, kind: "frame" }), { ...frame, ack: { kind: "ack", id: 1 }, catalog: { action: "sessions", all: true } });
   assert.throws(() => decodeFrame({ ...frame, kind: "unknown" }), /不匹配/);
 });
+test("选择阶段保留原选项，拒绝说明和 sudo 私有阶段不公开令牌或账号", () => {
+  const options = [{ label: "允许一次", value: "Allow once" }, { label: "拒绝并说明", value: "Deny with instruction" }];
+  const base = { id: "same", deadline: null, title: "审批", options };
+  const bash = { ...base, kind: "bashApproval", approval: { cwd: "/demo", command: "echo test", items: [], environment: [] } };
+  const choose = { kind: "choose" };
+  assert.deepEqual(decodeDialog({ ...base, kind: "toolApproval", stage: choose }, "s"), decodeDialog({ ...base, kind: "select" }, "s"));
+  assert.deepEqual(decodeDialog({ ...bash, stage: choose }, "s"), decodeDialog(bash, "s"));
+  for (const kind of ["instruction", "waiting", "prompting", "submitted"]) {
+    const dialog = decodeDialog({ ...bash, stage: { kind, token: "private-token", account: "private-account" } }, "s");
+    assert.equal(dialog.kind, "nativeApproval"); assert.doesNotMatch(JSON.stringify(dialog), /private-|options/);
+  }
+  const sudo = { ...bash, approval: { ...bash.approval, command: "/usr/bin/sudo example" } };
+  assert.equal(decodeDialog({ ...sudo, stage: choose }, "s").kind, "nativeApproval");
+  assert.equal(decodeDialog(sudo, "s").kind, "command");
+  assert.throws(() => decodeDialog({ ...bash, stage: { kind: "unknown" } }, "s"), /阶段/);
+});
 test("只读取管理事件，未知交互不被猜测为审批", () => {
   assert.equal(decodeEvent({ type: "snapshot", value: { body: "不保存聊天正文" } }), undefined);
   assert.throws(() => decodeDialog({ id: "x", title: "未知", kind: "future", deadline: null }, "session"), /不匹配/);

@@ -1,5 +1,35 @@
 import { test, expect } from "@playwright/test";
+import { object } from "../../src/shared/protocol.ts";
 
+test("同一审批进入拒绝说明阶段后只显示原生会话入口", async ({ page }) => {
+  let instruction = false;
+  await page.route("**/_hub/overview", async route => {
+    const response = await route.fetch();
+    const data: unknown = await response.json();
+    if (!object(data) || !Array.isArray(data.devices)) throw new Error("缺少设备列表");
+    const device: unknown = data.devices[0];
+    if (!object(device) || typeof device.id !== "string") throw new Error("缺少设备身份");
+    const base = { id: "test-stage", sessionId: "runtime-1", deviceId: device.id, title: "工具审批", deadline: null };
+    const stage = instruction ? { kind: "nativeApproval", message: "请在原生会话中填写拒绝说明。" } : { kind: "choice", options: [
+      { label: "允许一次", value: "Allow once" }, { label: "拒绝并说明", value: "Deny with instruction" },
+    ] };
+    await route.fulfill({ response, json: { ...data, interactions: [{ ...base, ...stage }] } });
+  });
+  await page.route("**/_hub/respond", async route => {
+    const body: unknown = route.request().postDataJSON();
+    expect(object(body) && body.value).toBe("Deny with instruction"); instruction = true;
+    await route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/"); await page.getByLabel("中心密码").fill("test-password-1234");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: /消息中心/ }).click();
+  const card = page.locator('[data-dialog-id="test-stage"]');
+  await expect(card.getByRole("button", { name: "允许一次" })).toBeVisible();
+  await card.getByRole("button", { name: "拒绝并说明" }).click();
+  await expect(card).toContainText("请在原生会话中填写拒绝说明");
+  await expect(card.getByRole("button")).toHaveCount(0);
+  await expect(card.getByRole("link", { name: "查看会话" })).toHaveAttribute("href", /hub-session=runtime-1/);
+});
 test("概览不加载历史，设备工作区按需浏览，集中交互仍双向同步", async ({ page, context }, info) => {
   test.setTimeout(45_000);
   const errors: string[] = [];

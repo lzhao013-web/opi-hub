@@ -84,10 +84,31 @@ export function decodeDialog(raw: unknown, sessionId: string): Interaction {
   let value: unknown;
   switch (raw.kind) {
     case "select": value = { ...base, kind: "choice", options: raw.options }; break;
-    case "bashApproval":
-      if (!object(raw.approval)) throw new Error("o-pi 命令审批格式不匹配");
+    case "toolApproval": case "bashApproval": {
+      // 旧版 Bash 审批没有 stage。新版的说明和认证阶段沿用同一个对话框 ID。
+      const stage = raw.stage === undefined && raw.kind === "bashApproval" ? "choose" : object(raw.stage) ? raw.stage.kind : undefined;
+      if (stage === "instruction") {
+        value = { ...base, kind: "nativeApproval", message: "请在原生会话中填写拒绝说明。" };
+        break;
+      }
+      if (raw.kind === "bashApproval" && (stage === "waiting" || stage === "prompting" || stage === "submitted")) {
+        value = { ...base, kind: "nativeApproval", message: "请回到批准 sudo 命令的原生页面完成认证。" };
+        break;
+      }
+      if (stage !== "choose") throw new Error("o-pi 审批阶段不匹配");
+      if (raw.kind === "toolApproval") { value = { ...base, kind: "choice", options: raw.options }; break; }
+      if (!object(raw.approval) || !str(raw.approval.command)) throw new Error("o-pi 命令审批格式不匹配");
+      if (raw.stage !== undefined && /^\s*(?:\/usr\/bin\/)?sudo\s/u.test(raw.approval.command)) {
+        value = { ...base, kind: "nativeApproval", message: "请在原生会话批准 sudo 命令，以便在同一页面完成认证。" };
+        break;
+      }
+      if (Array.isArray(raw.approval.environment) && raw.approval.environment.length) {
+        value = { ...base, kind: "nativeApproval", message: "请在原生会话核对环境变量后审批。" };
+        break;
+      }
       value = { ...base, kind: "command", cwd: raw.approval.cwd, command: raw.approval.command, targets: raw.approval.items, options: raw.options };
       break;
+    }
     case "confirm": value = { ...base, kind: "confirm", message: raw.message }; break;
     case "input": case "secret": value = { ...base, kind: raw.kind, initial: raw.initial, placeholder: raw.placeholder }; break;
     case "editor": value = { ...base, kind: "editor", initial: raw.initial }; break;

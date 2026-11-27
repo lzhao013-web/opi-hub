@@ -116,7 +116,7 @@ test("Linux 通知按钮的决定经中心提交到原设备，无决定不消�
       kind: "linux",
       send: async (notice, _signal, url) => {
         received.push({ body: notice.body, decisions: notice.detail?.decisions ?? [], url });
-        if (url?.includes("approval=allow") || url?.includes("approval=confirm")) return "allow";
+        if (url?.includes("approval=allow") || url?.includes("approval=tool") || url?.includes("approval=confirm")) return "allow";
         if (url?.includes("approval=deny")) return "deny";
       },
     });
@@ -130,12 +130,16 @@ test("Linux 通知按钮的决定经中心提交到原设备，无决定不消�
         approval: { command: id === "allow" ? `echo first\necho ${"x".repeat(500)}` : `echo approval-${id}`, cwd: "/demo", items: [] },
         options: ["Allow once", "Deny"].map((value) => ({ label: value, value })),
       })),
+      { id: "tool", kind: "toolApproval", title: "测试工具审批", deadline: null, stage: { kind: "choose" }, options: [
+        { label: "允许一次", value: "Allow once" }, { label: "拒绝", value: "Deny" }, { label: "拒绝并说明", value: "Deny with instruction" },
+      ] },
       { id: "confirm", kind: "confirm", title: "确认项目", message: "是否继续？", deadline: null },
       { id: "secret", kind: "secret", title: "输入密钥", initial: "secret", placeholder: "", deadline: null },
     ]);
     const fromSource = () => received.filter(x => x.url?.includes(`device=${env.a.id}`) && x.url.includes("session=runtime-1"));
-    await until(() => fromSource().length >= 4 && env.fakeA.answers.length >= 2);
-    assert.equal(fromSource().length, 4);
+    await until(() => fromSource().length >= 5 && env.fakeA.answers.length >= 3);
+    assert.equal(fromSource().length, 5);
+    assert.deepEqual(received.find(x => x.url?.includes("approval=tool"))?.decisions, ["allow", "deny"]);
     const long = received.find(x => x.url?.includes("approval=allow"));
     assert.ok(long?.url);
     assert.equal(new URL(long.url).origin, env.hub.url);
@@ -144,10 +148,18 @@ test("Linux 通知按钮的决定经中心提交到原设备，无决定不消�
     assert.ok(long.body.length <= 320);
     assert.deepEqual(long.decisions, ["allow", "deny"]);
     assert.deepEqual(received.find(x => x.url?.includes("approval=confirm"))?.decisions, []);
-    assert.deepEqual(env.fakeA.answers.map(({ dialogId, value }) => [dialogId, value]).sort(), [["allow", "Allow once"], ["deny", "Deny"]]);
+    assert.deepEqual(env.fakeA.answers.map(({ dialogId, value }) => [dialogId, value]).sort(), [["allow", "Allow once"], ["deny", "Deny"], ["tool", "Allow once"]]);
     const overview: unknown = await (await fetch(env.hub.url + "/_hub/overview", { headers: { Cookie: env.cookie } })).json();
     assert.ok(object(overview) && Array.isArray(overview.interactions));
     for (const id of ["dismiss", "confirm", "secret"]) assert.ok(overview.interactions.some((item: unknown) => object(item) && item.deviceId === env.a.id && item.id === id));
+    // 同一待处理项进入说明阶段。即使上游仍附带允许选项，旧按钮也不能提交。
+    env.fakeA.setDialogs("runtime-1", [{ id: "dismiss", kind: "bashApproval", stage: { kind: "instruction", token: "private-token" }, title: "命令审批", deadline: null, options: [{ label: "允许一次", value: "Allow once" }] }]);
+    await until(async () => {
+      const state: unknown = await (await fetch(env.hub.url + "/_hub/overview", { headers: { Cookie: env.cookie } })).json();
+      return object(state) && Array.isArray(state.interactions) && state.interactions.some((item: unknown) => object(item) && item.id === "dismiss" && item.kind === "nativeApproval");
+    });
+    const stale = await fetch(env.hub.url + "/_hub/respond", { method: "POST", headers: { Origin: env.hub.url, Cookie: env.cookie, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId: env.a.id, sessionId: "runtime-1", dialogId: "dismiss", value: "Allow once" }) });
+    assert.equal(stale.status, 409); assert.equal(env.fakeA.answers.length, 3);
     assert.equal(env.fakeB.answers.length, 0);
   } finally { await receiver?.close(); await env.close(); }
 });

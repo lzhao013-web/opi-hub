@@ -15,6 +15,7 @@ export interface Choice { label: string; value: string }
 export interface CommandTarget { action: string; kind: string; target: string; reason: string }
 interface InteractionBase { id: string; sessionId: string; title: string; deadline: number | null }
 export type Interaction = InteractionBase & (
+  | { kind: "nativeApproval"; message: string }
   | { kind: "choice"; options: Choice[] }
   | { kind: "command"; cwd: string; command: string; targets: CommandTarget[]; options: Choice[] }
   | { kind: "confirm"; message: string }
@@ -44,11 +45,16 @@ export function isInteraction(value: unknown): value is Interaction {
   switch (value.kind) {
     case "choice": return Array.isArray(value.options) && value.options.every(isChoice);
     case "command": return string(value.cwd) && string(value.command) && Array.isArray(value.targets) && value.targets.every(isCommandTarget) && Array.isArray(value.options) && value.options.every(isChoice);
-    case "confirm": return string(value.message);
+    case "nativeApproval": case "confirm": return string(value.message);
     case "input": case "secret": return string(value.initial) && string(value.placeholder);
     case "editor": return string(value.initial);
     default: return false;
   }
+}
+export function requireAnswerable(dialogs: Interaction[], sessionId: string, id: string): void {
+  const dialog = dialogs.find((item) => item.sessionId === sessionId && item.id === id);
+  if (!dialog) throw new Error("交互已结束或状态未就绪，请刷新");
+  if (dialog.kind === "nativeApproval") throw new Error(dialog.message);
 }
 export function isManagement(value: unknown): value is ManagementState {
   return object(value) && (value.state === "connecting" || value.state === "error" && string(value.message) ||

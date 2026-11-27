@@ -47,7 +47,11 @@ export class ManagementView {
     for (const [index, item] of visible.entries()) {
       const key = JSON.stringify([item.deviceId, item.sessionId, item.id]);
       let card = this.cards.get(key);
-      if (!card) { card = this.interaction(item); this.cards.set(key, card); }
+      if (!card || card.dataset.kind !== item.kind) {
+        const updated = this.interaction(item);
+        card?.replaceWith(updated); card = updated; this.cards.set(key, card);
+      }
+      if (item.kind === "nativeApproval") card.querySelector(".interaction-message").textContent = item.message;
       const session = data.sessions.find((session) => session.deviceId === item.deviceId && session.target.id === item.sessionId);
       card.querySelector(".interaction-context").textContent = `${devices.get(item.deviceId)?.name} · ${session?.title || item.sessionId}`;
       if (this.interactions.children[index] !== card) this.interactions.insertBefore(card, this.interactions.children[index] ?? null);
@@ -76,10 +80,11 @@ export class ManagementView {
   }
   interaction(item) {
     const card = create("article", "interaction"); card.tabIndex = -1;
-    card.dataset.dialogId = item.id; card.dataset.deviceId = item.deviceId;
+    card.dataset.kind = item.kind; card.dataset.dialogId = item.id; card.dataset.deviceId = item.deviceId;
     const header = create("div", "interaction-heading");
     const heading = create("div"); heading.append(create("h2", "", item.title), create("p", "interaction-context muted"));
     header.append(heading, link(item.deviceId, { id: item.sessionId }, "查看会话 ↗")); card.append(header);
+    if (item.kind === "nativeApproval") { card.append(create("p", "interaction-message", item.message)); return card; }
     if (item.kind === "confirm") card.append(create("p", "interaction-message", item.message));
     if (item.kind === "command") {
       card.append(create("p", "muted", item.cwd), create("pre", "command-preview", item.command));

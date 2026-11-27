@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { json, MAX_FRAME, parse, type OpenRequest } from "../shared/protocol.ts";
 import { isReport, isBackendReply, type NodeReport } from "../shared/backend.ts";
-import { isManagementMessage, isRespondReply, isHistoryReply, type HistoryEntry, type HistoryCommand, type CancelHistory, type ManagementState, type RespondCommand } from "../shared/management.ts";
+import { requireAnswerable, isManagementMessage, isRespondReply, isHistoryReply, type HistoryEntry, type HistoryCommand, type CancelHistory, type ManagementState, type RespondCommand } from "../shared/management.ts";
 import { buffer } from "../shared/sockets.ts";
 import { isSessionResponse } from "../shared/session-creation.ts";
 import { SessionRequests } from "./session-requests.ts";
@@ -35,7 +35,8 @@ export class Nodes {
   async respond(deviceId: string, sessionId: string, dialogId: string, value: string | null, signal?: AbortSignal): Promise<void> {
     const node = this.connections.get(deviceId);
     if (!node || signal?.aborted) throw new Error("设备离线或请求已取消");
-    if (node.management?.state !== "ready" || !node.management.interactions.some((item) => item.sessionId === sessionId && item.id === dialogId)) throw new Error("交互已结束或状态未就绪，请刷新");
+    if (node.management?.state !== "ready") throw new Error("交互状态未就绪，请刷新");
+    requireAnswerable(node.management.interactions, sessionId, dialogId);
     const key = JSON.stringify([deviceId, sessionId, dialogId]);
     if (this.answering.has(key)) throw new Error("此交互正在提交，请等待结果");
     const id = randomUUID();
