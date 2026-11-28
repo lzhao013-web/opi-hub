@@ -1,4 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
+import { fixtureInstruction, fixtureShell, fixtureShellCommand, fixtureShellPrompt, fixtureWritePrompt } from "../model.ts";
+import { isInteraction, type Interaction } from "../../src/shared/management.ts";
+import { object } from "../../src/shared/protocol.ts";
 
 async function newSession(native: Page): Promise<void> {
   const editor = native.getByRole("textbox", { name: "消息", exact: true }); await expect(editor).toBeVisible();
@@ -13,7 +16,8 @@ test.afterEach(async ({ page }, info) => {
   const value: unknown = await (await page.request.get("/_hub/overview")).json();
   if (typeof value !== "object" || value === null || !("interactions" in value) || !Array.isArray(value.interactions)) return;
   for (const item of value.interactions) if (typeof item === "object" && item !== null && "deviceId" in item && "sessionId" in item && "id" in item) {
-    await page.request.post("/_hub/respond", { headers: { Origin: new URL(page.url()).origin }, data: { deviceId: item.deviceId, sessionId: item.sessionId, dialogId: item.id, value: null } });
+    const stage = "stage" in item && object(item.stage) ? item.stage : undefined;
+    await page.request.post("/_hub/respond", { headers: { Origin: new URL(page.url()).origin }, data: { deviceId: item.deviceId, sessionId: item.sessionId, dialogId: item.id, value: null, token: stage?.token } });
   }
 });
 
@@ -68,6 +72,42 @@ test("真实会话直达和后台审批订阅不切换原页面，中心回答�
   await expect(native.getByText("中心确认完成", { exact: true }).last()).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("native-management.png"), fullPage: true });
   expect(errors).toEqual([]);
+  await native.close();
+});
+
+test("真实工具审批可发送拒绝说明，命令审批可跳过说明", async ({ page, context }) => {
+  await page.goto("/"); await page.getByLabel("中心密码").fill("test-password-1234");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await page.getByRole("button", { name: /全部设备/ }).click();
+  const [native] = await Promise.all([context.waitForEvent("page"), page.getByRole("link", { name: "打开 o-pi" }).click()]);
+  const editor = native.getByRole("textbox", { name: "消息", exact: true });
+  await newSession(native);
+  await editor.fill(fixtureWritePrompt); await editor.press("ControlOrMeta+Enter");
+  await expect(native.getByRole("button", { name: "拒绝并说明" })).toBeVisible();
+  await page.bringToFront(); await page.getByRole("button", { name: /消息中心/ }).click();
+  await page.getByRole("tab", { name: /待处理/ }).click();
+  const tool = page.locator(".interaction").filter({ hasText: "拟写入的隔离测试内容" });
+  await expect(tool).toContainText("hub-approval.txt");
+  await tool.getByRole("button", { name: "拒绝并说明" }).click();
+  const instruction = tool.getByLabel("给代理的说明"); await expect(instruction).toBeVisible();
+  const overview: unknown = await (await page.request.get("/_hub/overview")).json();
+  if (!object(overview) || !Array.isArray(overview.interactions)) throw new Error("缺少交互目录");
+  const item = overview.interactions.find((value: unknown): value is Interaction & { deviceId: string } =>
+    isInteraction(value) && value.kind === "tool" && "deviceId" in value && typeof value.deviceId === "string");
+  if (!item) throw new Error("缺少工具审批");
+  const stale = await page.request.post("/_hub/respond", { headers: { Origin: new URL(page.url()).origin },
+    data: { deviceId: item.deviceId, sessionId: item.sessionId, dialogId: item.id, value: "Allow once" } });
+  expect(stale.status()).toBe(409);
+  await instruction.fill(fixtureInstruction); await tool.getByRole("button", { name: "发送说明" }).click();
+  await expect(tool).toHaveCount(0);
+  await expect(native.locator(".assistant-reply")).toContainText("模型收到拒绝说明");
+  await editor.fill(fixtureShellPrompt); await editor.press("ControlOrMeta+Enter");
+  const shell = page.locator(".interaction").filter({ hasText: fixtureShellCommand });
+  await expect(shell).toContainText(fixtureShell === "powershell" ? "PowerShell" : "Bash");
+  await shell.getByRole("button", { name: "拒绝并说明" }).click();
+  await shell.getByRole("button", { name: "跳过说明" }).click();
+  await expect(shell).toHaveCount(0);
+  await expect(native.locator(".assistant-reply").last()).toContainText("计划验证完成");
   await native.close();
 });
 

@@ -1,6 +1,6 @@
 import { object } from "../../shared/protocol.ts";
 import { isModelOption, type ModelOption } from "../../shared/models.ts";
-import { isInteraction, type Interaction } from "../../shared/management.ts";
+import { isInteraction, matchesDialog, responseInStage, type Interaction, type InteractionAnswer } from "../../shared/management.ts";
 
 export interface History { path: string; cwd: string; title: string; modified: string }
 export interface Activity extends Omit<History, "path"> { sessionId: string; path: string | null; state: "idle" | "loading" | "running" | "waiting" }
@@ -84,29 +84,33 @@ export function decodeDialog(raw: unknown, sessionId: string): Interaction {
   let value: unknown;
   switch (raw.kind) {
     case "select": value = { ...base, kind: "choice", options: raw.options }; break;
-    case "toolApproval": case "bashApproval": {
-      // 旧版 Bash 审批没有 stage。新版的说明和认证阶段沿用同一个对话框 ID。
-      const stage = raw.stage === undefined && raw.kind === "bashApproval" ? "choose" : object(raw.stage) ? raw.stage.kind : undefined;
-      if (stage === "instruction") {
-        value = { ...base, kind: "nativeApproval", message: "请在原生会话中填写拒绝说明。" };
+    case "toolApproval": case "bashApproval": case "shellApproval": {
+      const stage = object(raw.stage) ? { kind: raw.stage.kind, ...(raw.stage.kind === "instruction" && { token: raw.stage.token }) } : undefined;
+      if (raw.kind === "toolApproval") { value = { ...base, kind: "tool", options: raw.options, stage }; break; }
+      const native = (message: string) => ({ ...base, kind: "nativeApproval", message });
+      if (raw.kind === "bashApproval" && stage?.kind === "instruction") {
+        value = native("请在原生会话中填写拒绝说明。");
         break;
       }
-      if (raw.kind === "bashApproval" && (stage === "waiting" || stage === "prompting" || stage === "submitted")) {
-        value = { ...base, kind: "nativeApproval", message: "请回到批准 sudo 命令的原生页面完成认证。" };
+      if (stage?.kind === "waiting" || stage?.kind === "prompting" || stage?.kind === "submitted") {
+        value = native("请回到批准 sudo 命令的原生页面完成认证。");
         break;
       }
-      if (stage !== "choose") throw new Error("o-pi 审批阶段不匹配");
-      if (raw.kind === "toolApproval") { value = { ...base, kind: "choice", options: raw.options }; break; }
+      const legacy = raw.kind === "bashApproval" && raw.stage === undefined;
+      const latest = raw.kind === "shellApproval";
+      if (!legacy && stage?.kind !== "choose" && !(latest && stage?.kind === "instruction")) throw new Error("o-pi 审批阶段不匹配");
       if (!object(raw.approval) || !str(raw.approval.command)) throw new Error("o-pi 命令审批格式不匹配");
-      if (raw.stage !== undefined && /^\s*(?:\/usr\/bin\/)?sudo\s/u.test(raw.approval.command)) {
-        value = { ...base, kind: "nativeApproval", message: "请在原生会话批准 sudo 命令，以便在同一页面完成认证。" };
+      const { cwd, command, items, shell, environment } = raw.approval;
+      if (latest && ((shell !== "bash" && shell !== "powershell") || !Array.isArray(environment))) throw new Error("o-pi Shell 审批格式不匹配");
+      if (!legacy && (!latest || shell === "bash") && /^[ \t\n]*(?:\/usr\/bin\/)?sudo[ \t]/u.test(command)) {
+        value = native("请在原生会话批准 sudo 命令，以便在同一页面完成认证。");
         break;
       }
-      if (Array.isArray(raw.approval.environment) && raw.approval.environment.length) {
-        value = { ...base, kind: "nativeApproval", message: "请在原生会话核对环境变量后审批。" };
+      if (Array.isArray(environment) && environment.length) {
+        value = native("请在原生会话核对环境变量后审批。");
         break;
       }
-      value = { ...base, kind: "command", cwd: raw.approval.cwd, command: raw.approval.command, targets: raw.approval.items, options: raw.options };
+      value = { ...base, kind: "command", cwd, command, targets: items, options: raw.options, ...(latest && { shell, stage }) };
       break;
     }
     case "confirm": value = { ...base, kind: "confirm", message: raw.message }; break;
@@ -116,4 +120,10 @@ export function decodeDialog(raw: unknown, sessionId: string): Interaction {
   }
   if (!isInteraction(value)) throw new Error("o-pi 对话框类型或字段不匹配");
   return value;
+}
+
+export function dialogAction(dialogs: Interaction[], answer: InteractionAnswer) {
+  const dialog = dialogs.find((item) => matchesDialog(item, answer));
+  if (!dialog || !responseInStage(dialog, answer)) throw new Error("交互已结束或阶段已变化，请刷新状态");
+  return { action: "dialog", id: answer.dialogId, value: answer.value, token: answer.token };
 }

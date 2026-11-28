@@ -1,3 +1,4 @@
+import type { InteractionAnswer } from "../../shared/management.ts";
 import type { CreationRecord } from "../../shared/session-creation.ts";
 import { isAbsoluteDirectory } from "../../shared/session-creation.ts";
 import { SessionPort } from "./session.ts";
@@ -22,6 +23,6 @@ export class SessionCreation {
       this.record = { id: this.record.id, path: this.record.path, startedAt: this.record.startedAt, state: "error", error: error instanceof Error ? error.message : String(error), session: this.port.selected };
     } finally { await this.port.finish(); changed(); }
   }
-  respond(sessionId: string, dialogId: string, value: string | null) { return this.port.respond(sessionId, dialogId, value); }
+  respond(answer: InteractionAnswer) { return this.port.respond(answer); }
   async close(): Promise<void> { this.controller.abort(); this.port.close(); await this.task; }
 }

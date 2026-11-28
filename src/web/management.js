@@ -47,11 +47,13 @@ export class ManagementView {
     for (const [index, item] of visible.entries()) {
       const key = JSON.stringify([item.deviceId, item.sessionId, item.id]);
       let card = this.cards.get(key);
-      if (!card || card.dataset.kind !== item.kind) {
-        const updated = this.interaction(item);
-        card?.replaceWith(updated); card = updated; this.cards.set(key, card);
+      const signature = JSON.stringify(item);
+      if (card?.dataset.signature !== signature) {
+        const next = this.interaction(item);
+        next.dataset.signature = signature;
+        card?.replaceWith(next);
+        card = next; this.cards.set(key, card);
       }
-      if (item.kind === "nativeApproval") card.querySelector(".interaction-message").textContent = item.message;
       const session = data.sessions.find((session) => session.deviceId === item.deviceId && session.target.id === item.sessionId);
       card.querySelector(".interaction-context").textContent = `${devices.get(item.deviceId)?.name} · ${session?.title || item.sessionId}`;
       if (this.interactions.children[index] !== card) this.interactions.insertBefore(card, this.interactions.children[index] ?? null);
@@ -80,11 +82,17 @@ export class ManagementView {
   }
   interaction(item) {
     const card = create("article", "interaction"); card.tabIndex = -1;
-    card.dataset.kind = item.kind; card.dataset.dialogId = item.id; card.dataset.deviceId = item.deviceId;
+    card.dataset.dialogId = item.id; card.dataset.deviceId = item.deviceId;
     const header = create("div", "interaction-heading");
-    const heading = create("div"); heading.append(create("h2", "", item.title), create("p", "interaction-context muted"));
+    const line = item.kind === "tool" ? item.title.indexOf("\n") : -1;
+    const title = line < 0 ? item.title : item.title.slice(0, line);
+    const heading = create("div"); heading.append(create("h2", "", title), create("p", "interaction-context muted"));
     header.append(heading, link(item.deviceId, { id: item.sessionId }, "查看会话 ↗")); card.append(header);
-    if (item.kind === "nativeApproval") { card.append(create("p", "interaction-message", item.message)); return card; }
+    if (line >= 0) card.append(create("pre", "command-preview", item.title.slice(line + 1)));
+    if (item.kind === "nativeApproval") {
+      card.append(create("p", "interaction-message", item.message));
+      return card;
+    }
     if (item.kind === "confirm") card.append(create("p", "interaction-message", item.message));
     if (item.kind === "command") {
       card.append(create("p", "muted", item.cwd), create("pre", "command-preview", item.command));
@@ -92,15 +100,22 @@ export class ManagementView {
       for (const target of item.targets) targets.append(create("dt", "", `${target.action} · ${target.kind} · ${target.target}`), create("dd", "", target.reason));
       card.append(targets);
     }
+    const instruction = item.stage?.kind === "instruction";
+    if (instruction) card.append(create("p", "interaction-message", "已选择拒绝，可以补充说明或直接跳过。"));
     let input;
     const form = create("form", "interaction-form");
-    if (["input", "secret", "editor"].includes(item.kind)) {
+    if (instruction || ["input", "secret", "editor"].includes(item.kind)) {
       const id = `interaction-field-${++this.fieldId}`;
-      const label = create("label", "", item.kind === "editor" ? "编辑内容" : "回答"); label.htmlFor = id;
-      input = create(item.kind === "editor" ? "textarea" : "input");
-      input.id = id; input.value = item.initial;
-      if (item.kind === "editor") input.rows = 6;
-      else { input.type = item.kind === "secret" ? "password" : "text"; input.placeholder = item.placeholder; input.autocomplete = "off"; }
+      const labelText = instruction ? "给代理的说明" : item.kind === "editor" ? "编辑内容" : "回答";
+      const label = create("label", "", labelText); label.htmlFor = id;
+      const multiline = instruction || item.kind === "editor";
+      input = create(multiline ? "textarea" : "input");
+      input.id = id; input.value = item.initial ?? "";
+      if (multiline) input.rows = instruction ? 3 : 6;
+      else {
+        input.type = item.kind === "secret" ? "password" : "text";
+        input.placeholder = item.placeholder ?? ""; input.autocomplete = "off";
+      }
       form.append(label, input);
     }
     const feedback = create("p", "interaction-feedback"); feedback.setAttribute("role", "status"); feedback.hidden = true;
@@ -111,7 +126,7 @@ export class ManagementView {
       busy = true; feedback.hidden = false; feedback.textContent = "正在提交…"; feedback.classList.remove("error");
       for (const control of form.querySelectorAll("button,input,textarea")) control.disabled = true;
       try {
-        await this.request("/_hub/respond", { method: "POST", body: JSON.stringify({ deviceId: item.deviceId, sessionId: item.sessionId, dialogId: item.id, value }) });
+        await this.request("/_hub/respond", { method: "POST", body: JSON.stringify({ deviceId: item.deviceId, sessionId: item.sessionId, dialogId: item.id, value, token: item.stage?.token }) });
         feedback.textContent = "已提交，等待设备更新";
         await this.refresh();
       } catch (error) {
@@ -123,13 +138,18 @@ export class ManagementView {
       const node = create("button", primary ? "primary" : "secondary", label); node.type = "button";
       node.addEventListener("click", () => { void submit(value); }); actions.append(node);
     };
-    if (item.kind === "choice" || item.kind === "command") for (const option of item.options) button(option.label, option.value, false);
-    else if (item.kind === "confirm") { button("确认", "yes", true); button("拒绝", null, false); }
-    else {
-      const send = create("button", "primary", "提交回答"); send.type = "submit"; actions.append(send);
+    if (input) {
+      const send = create("button", "primary", instruction ? "发送说明" : "提交回答");
+      send.type = "submit"; actions.append(send);
+      if (instruction) {
+        send.disabled = true;
+        input.addEventListener("input", () => { send.disabled = !input.value.trim(); });
+      }
       form.addEventListener("submit", (event) => { event.preventDefault(); void submit(input.value); });
-    }
-    if (item.kind !== "confirm") button("取消交互", null, false);
+    } else if (item.kind === "confirm") {
+      button("确认", "yes", true); button("拒绝", null, false);
+    } else for (const option of item.options) button(option.label, option.value, false);
+    if (item.kind !== "confirm") button(instruction ? "跳过说明" : "取消交互", null, false);
     if (item.deadline !== null) card.append(create("p", "footnote", `截止时间：${new Date(item.deadline).toLocaleString()}`));
     form.append(actions, feedback); card.append(form);
     return card;

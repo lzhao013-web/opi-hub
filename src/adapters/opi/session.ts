@@ -1,9 +1,9 @@
-import { requireAnswerable, type Interaction } from "../../shared/management.ts";
+import type { Interaction, InteractionAnswer } from "../../shared/management.ts";
 import { isAbsoluteDirectory } from "../../shared/session-creation.ts";
 import { OpiClient } from "./client.ts";
 import { queryDirectories } from "./directories.ts";
 import { ExecutionState } from "./execution.ts";
-import { decodeDialog, type Selected } from "./wire.ts";
+import { decodeDialog, dialogAction, type Selected } from "./wire.ts";
 
 export class SessionPort {
   readonly client: OpiClient; readonly execution = new ExecutionState();
@@ -40,9 +40,8 @@ export class SessionPort {
     if (!session || session.id === previous.id || session.cwd !== listing.path) throw new Error("o-pi 未返回目标目录中的全新会话");
     return session;
   }
-  async respond(sessionId: string, id: string, value: string | null): Promise<void> {
-    requireAnswerable(this.dialogs, sessionId, id);
-    const response = this.client.action({ action: "dialog", id, value }, sessionId, AbortSignal.timeout(25_000)); this.responses.add(response);
+  async respond(answer: InteractionAnswer): Promise<void> {
+    const response = this.client.action(dialogAction(this.dialogs, answer), answer.sessionId, AbortSignal.timeout(25_000)); this.responses.add(response);
     try { await response; } finally { this.responses.delete(response); }
   }
   async waitIdle(input: AbortSignal): Promise<void> {

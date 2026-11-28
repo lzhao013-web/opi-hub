@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import { json, MAX_FRAME, parse, type OpenRequest } from "../shared/protocol.ts";
 import { isReport, isBackendReply, type NodeReport } from "../shared/backend.ts";
-import { requireAnswerable, isManagementMessage, isRespondReply, isHistoryReply, type HistoryEntry, type HistoryCommand, type CancelHistory, type ManagementState, type RespondCommand } from "../shared/management.ts";
+import { isManagementMessage, isRespondReply, isHistoryReply, matchesDialog, responseInStage, type InteractionAnswer, type HistoryEntry, type HistoryCommand, type CancelHistory, type ManagementState, type RespondCommand } from "../shared/management.ts";
 import { buffer } from "../shared/sockets.ts";
 import { isSessionResponse } from "../shared/session-creation.ts";
 import { SessionRequests } from "./session-requests.ts";
@@ -32,11 +32,13 @@ export class Nodes {
   }
   private identity(node: Connection): string { return `${node.id}:${node.report?.backend.generation ?? 0}`; }
   management(id: string): ManagementState | undefined { return this.connections.get(id)?.management; }
-  async respond(deviceId: string, sessionId: string, dialogId: string, value: string | null, signal?: AbortSignal): Promise<void> {
+  async respond(deviceId: string, answer: InteractionAnswer, signal?: AbortSignal): Promise<void> {
+    const { sessionId, dialogId, value, token } = answer;
     const node = this.connections.get(deviceId);
     if (!node || signal?.aborted) throw new Error("设备离线或请求已取消");
-    if (node.management?.state !== "ready") throw new Error("交互状态未就绪，请刷新");
-    requireAnswerable(node.management.interactions, sessionId, dialogId);
+    const dialog = node.management?.state === "ready" && node.management.interactions.find((item) => matchesDialog(item, answer));
+    if (dialog && dialog.kind === "nativeApproval") throw new Error(dialog.message);
+    if (!dialog || !responseInStage(dialog, answer)) throw new Error("交互已结束或阶段已变化，请刷新状态");
     const key = JSON.stringify([deviceId, sessionId, dialogId]);
     if (this.answering.has(key)) throw new Error("此交互正在提交，请等待结果");
     const id = randomUUID();
@@ -50,7 +52,7 @@ export class Nodes {
       const timer = setTimeout(() => finish(new Error("交互提交超时，请检查原会话状态，不要自动重试")), 30_000);
       this.answering.add(key); this.responses.set(id, { node, deviceId, finish });
       signal?.addEventListener("abort", abort, { once: true });
-      void json(node.socket, { type: "respond", id, sessionId, dialogId, value } satisfies RespondCommand).catch((error: unknown) => finish(error instanceof Error ? error : new Error("提交失败")));
+      void json(node.socket, { type: "respond", id, sessionId, dialogId, value, token } satisfies RespondCommand).catch((error: unknown) => finish(error instanceof Error ? error : new Error("提交失败")));
     });
   }
   async history(deviceId: string, signal: AbortSignal): Promise<{ connectionId: string; entries: HistoryEntry[] }> {
@@ -131,7 +133,7 @@ export class Nodes {
         else if (isNotificationAnswer(value)) {
           const answer = this.notifications?.takeApproval(id, socket, value);
           // 审批已在别处处理或设备离线时，通知点击不重试。
-          if (answer) void this.respond(answer.deviceId, answer.sessionId, answer.dialogId, answer.value).catch(() => {});
+          if (answer) void this.respond(answer.deviceId, answer).catch(() => {});
         }
         else if (isSessionResponse(value) || isBackendReply(value) || isTaskReply(value)) this.sessionRequests.receive(node.socket, value);
         else if (isHistoryReply(value)) {

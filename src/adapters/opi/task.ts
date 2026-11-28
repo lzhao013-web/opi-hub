@@ -1,4 +1,5 @@
 import { executingTask, type TaskInput, type TaskRecord, type TaskState } from "../../shared/tasks.ts";
+import type { InteractionAnswer } from "../../shared/management.ts";
 import { OpiActionError } from "./client.ts";
 import { SessionPort } from "./session.ts";
 
@@ -58,7 +59,7 @@ export class AgentTask {
       } else this.update("unknown", `执行连接中断，不会自动重跑：${summary(error)}`);
     } finally { clearTimeout(timer); await this.port.finish(); this.changed(); }
   }
-  respond(sessionId: string, dialogId: string, value: string | null) { return this.port.respond(sessionId, dialogId, value); }
+  respond(answer: InteractionAnswer) { return this.port.respond(answer); }
   async cancel(): Promise<void> {
     if (executingTask(this.record.state)) { this.reason = "cancelled"; this.controller.abort(new Error("用户取消计划运行")); await this.task; return; }
     if (this.record.state !== "unknown" || !this.record.session) return;

@@ -30,8 +30,8 @@ async function until<T>(read: () => Promise<T> | T, accept: (value: T) => boolea
     assert.ok(Date.now() < deadline, "等待管理状态同步超时"); await delay(20);
   }
 }
-function respond(deviceId: string, sessionId: string, dialogId: string, value: string | null) {
-  return fetch(env.hub.url + "/_hub/respond", { method: "POST", headers: { Cookie: env.cookie, Origin: env.hub.url, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId, sessionId, dialogId, value }) });
+function respond(deviceId: string, sessionId: string, dialogId: string, value: string | null, token?: string) {
+  return fetch(env.hub.url + "/_hub/respond", { method: "POST", headers: { Cookie: env.cookie, Origin: env.hub.url, "Content-Type": "application/json" }, body: JSON.stringify({ deviceId, sessionId, dialogId, value, token }) });
 }
 
 describe("跨设备管理", () => {
@@ -137,6 +137,51 @@ describe("跨设备管理", () => {
     for (const [id, value] of [["command", "allow_once"], ["choice", "原始选项值"], ["input", "保留\n中文 😀"], ["secret", "secret-test"], ["editor", null]] as const) assert.equal((await respond(env.a.id, "runtime-2", id, value)).status, 200);
     await until(overview, (state) => state.interactions.length === 0);
     assert.deepEqual(env.fakeA.answers.slice(1).map((item) => item.value), ["allow_once", "原始选项值", "保留\n中文 😀", "secret-test", null]);
+  });
+  test("新版 PowerShell 和工具审批保留详情，拒绝说明只接受对应阶段令牌", async () => {
+    const options = [{ label: "允许一次", value: "Allow once" }, { label: "拒绝并说明", value: "Deny with instruction" }];
+    const toolTitle = "Approval required | write\nTarget: report.txt\n+ 独立测试";
+    env.fakeA.setDialogs("runtime-2", [
+      { id: "shell", kind: "shellApproval", title: "执行 PowerShell 命令", deadline: null, options, stage: { kind: "choose" },
+        approval: { shell: "powershell", cwd: "C:/project", command: "Get-Content report.txt", items: [], environment: [] } },
+      { id: "tool", kind: "toolApproval", title: toolTitle, deadline: null, options, stage: { kind: "choose" } },
+    ]);
+    try {
+      const initial = await until(overview, (state) => state.interactions.some((item) => item.id === "shell") && state.interactions.some((item) => item.id === "tool"));
+      const shell = initial.interactions.find((item) => item.id === "shell");
+      assert.ok(object(shell) && shell.kind === "command");
+      assert.equal(shell.shell, "powershell");
+      assert.equal(shell.command, "Get-Content report.txt"); assert.deepEqual(shell.options, options);
+      assert.ok(initial.interactions.some((item) => item.id === "tool" && item.title === toolTitle));
+      assert.equal((await respond(env.a.id, "runtime-2", "shell", "Allow once")).status, 200);
+      assert.equal((await respond(env.a.id, "runtime-2", "tool", "Deny with instruction")).status, 200);
+      const hasInstruction = (item: unknown) => object(item) && item.id === "tool" && object(item.stage) && item.stage.kind === "instruction";
+      const updated = await until(overview, (state) => state.interactions.some(hasInstruction));
+      const tool = updated.interactions.find(hasInstruction);
+      assert.ok(object(tool) && object(tool.stage) && typeof tool.stage.token === "string");
+      assert.equal((await respond(env.a.id, "runtime-2", "tool", "Allow once")).status, 409);
+      assert.equal((await respond(env.a.id, "runtime-2", "tool", "不要写入", "wrong-stage")).status, 409);
+      assert.equal((await respond(env.a.id, "runtime-2", "tool", "不要写入\n只预览", tool.stage.token)).status, 200);
+      assert.deepEqual(env.fakeA.answers.filter((answer) => answer.dialogId === "tool").map(({ value, token }) => [value, token]),
+        [["Deny with instruction", undefined], ["不要写入\n只预览", tool.stage.token]]);
+      assert.equal((await respond(env.a.id, "runtime-2", "tool", null, tool.stage.token)).status, 409);
+    } finally { env.fakeA.setDialogs("runtime-2", []); }
+  });
+  test("sudo 认证和环境变量审批保留原生入口，不接收私有响应", async () => {
+    const base = { kind: "shellApproval", title: "执行 Bash 命令", deadline: null, options: [{ label: "允许一次", value: "Allow once" }] };
+    env.fakeA.setDialogs("runtime-2", [
+      { ...base, id: "sudo", approval: { shell: "bash", cwd: "/project", command: "sudo test", items: [], environment: [] },
+        stage: { kind: "prompting", account: "fixture@host", token: "password-token", retry: false } },
+      { ...base, id: "env", approval: { shell: "bash", cwd: "/project", command: "echo $MODE", items: [], environment: [{ kind: "value", name: "MODE", value: "private-value" }] },
+        stage: { kind: "choose" } },
+    ]);
+    try {
+      const state = await until(overview, (value) => value.interactions.filter((item) => item.kind === "nativeApproval").length === 2);
+      assert.doesNotMatch(JSON.stringify(state.interactions), /fixture@host|password-token|private-value/);
+      assert.equal((await respond(env.a.id, "runtime-2", "sudo", "fixture-password", "password-token")).status, 409);
+      assert.equal((await respond(env.a.id, "runtime-2", "env", "Allow once")).status, 409);
+      assert.equal(env.fakeA.answers.some(({ dialogId }) => dialogId === "sudo" || dialogId === "env"), false);
+    } finally { env.fakeA.setDialogs("runtime-2", []); }
   });
   test("浏览器提示补全未索引交互，原页面关闭和中心重启后仍能回答", async () => {
     await until(() => env.fakeA.selections(), (sessions) => !sessions.includes("runtime-2"));

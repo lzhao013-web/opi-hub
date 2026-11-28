@@ -15,6 +15,7 @@ import { DATA_COMPRESSION } from "../shared/sockets.ts";
 import { resolveDevice } from "./native.ts";
 import { proxyHttp, proxyWebSocket } from "./proxy.ts";
 import { overview } from "./overview.ts";
+import { isInteractionAnswer } from "../shared/management.ts";
 import { isAbsoluteDirectory } from "../shared/session-creation.ts";
 import { ScheduleStore } from "./scheduling/store.ts";
 import { Scheduler } from "./scheduling/engine.ts";
@@ -137,12 +138,12 @@ export async function startHub(options: HubOptions) {
       if (url.pathname === "/_hub/respond" && req.method === "POST") {
         const session = auth.require(req); auth.checkOrigin(req, origin);
         const body = await readJson(req, 1024 * 1024);
-        if (!object(body) || typeof body.deviceId !== "string" || typeof body.sessionId !== "string" || typeof body.dialogId !== "string" || !(typeof body.value === "string" || body.value === null)) throw new HttpError(400, "无效的交互回答");
+        if (!object(body) || typeof body.deviceId !== "string" || !isInteractionAnswer(body)) throw new HttpError(400, "无效的交互回答");
         if (!store.get(body.deviceId)) throw new HttpError(404, "设备不存在");
         const controller = new AbortController();
         const cancel = () => controller.abort();
         session.close.add(cancel); res.once("close", cancel);
-        try { await nodes.respond(body.deviceId, body.sessionId, body.dialogId, body.value, controller.signal); }
+        try { await nodes.respond(body.deviceId, body, controller.signal); }
         catch (error) { throw new HttpError(409, error instanceof Error ? error.message : "提交失败，请检查原会话状态"); }
         finally { session.close.delete(cancel); res.off("close", cancel); }
         reply(res, 200, { ok: true }); return;

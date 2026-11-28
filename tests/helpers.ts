@@ -82,7 +82,7 @@ export async function fakeOpi(name: string) {
   const startup = new Map<string, { finish(): void }>();
   const dialogs = new Map<string, unknown[]>();
   const hiddenActivity = new Set<string>();
-  const answers: { sessionId: string; dialogId: string; value: unknown }[] = [];
+  const answers: { sessionId: string; dialogId: string; value: unknown; token?: string }[] = [];
   const send = (client: FixtureClient, events: unknown[], initial?: string) => {
     if (client.ws.readyState === WebSocket.OPEN) client.ws.send(JSON.stringify({ kind: "frame", id: ++client.sequence, events, ...(initial ? { client: initial, device: name } : {}) }));
   };
@@ -208,8 +208,15 @@ export async function fakeOpi(name: string) {
             const dialog = pending.find((item) => object(item) && item.id === action.id);
             if (!object(dialog)) { res.writeHead(400).end("Dialog already handled"); return; }
             if (dialog.kind === "confirm" && action.value !== null && action.value !== "yes") { res.writeHead(400).end("Invalid confirmation"); return; }
-            if (Array.isArray(dialog.options) && action.value !== null && !dialog.options.some((option) => object(option) && option.value === action.value)) { res.writeHead(400).end("Invalid option"); return; }
-            answers.push({ sessionId, dialogId: String(action.id), value: action.value });
+            const stage = object(dialog.stage) ? dialog.stage : undefined;
+            const token = stage?.kind === "instruction" || stage?.kind === "prompting" ? stage.token : undefined;
+            if (action.token !== token) { res.writeHead(400).end("Invalid stage"); return; }
+            if (token === undefined && Array.isArray(dialog.options) && action.value !== null && !dialog.options.some((option) => object(option) && option.value === action.value)) { res.writeHead(400).end("Invalid option"); return; }
+            answers.push({ sessionId, dialogId: String(action.id), value: action.value, ...(typeof token === "string" && { token }) });
+            if (stage?.kind === "choose" && action.value === "Deny with instruction") {
+              setDialogs(sessionId, pending.map((item) => item === dialog ? { ...dialog, stage: { kind: "instruction", token: crypto.randomUUID() } } : item));
+              res.writeHead(204).end(); return;
+            }
             setDialogs(sessionId, pending.filter((item) => item !== dialog));
             startup.get(sessionId)?.finish(); startup.delete(sessionId); execution.answer(sessionId);
           } else { res.writeHead(400).end("Unknown action"); return; }

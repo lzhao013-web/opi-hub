@@ -140,7 +140,7 @@ export function startNode(input: unknown, log: (message: string) => void = conso
             if (isRespond(request)) {
               void (async () => {
                 let result: RespondReply;
-                try { await runtime.management.respond(request.sessionId, request.dialogId, request.value); result = { type: "responded", id: request.id, ok: true }; }
+                try { await runtime.management.respond(request); result = { type: "responded", id: request.id, ok: true }; }
                 catch (error) { result = { type: "responded", id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) }; }
                 await json(control, result);
               })().catch(() => control.terminate()); return;

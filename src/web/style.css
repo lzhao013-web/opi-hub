@@ -154,6 +154,7 @@ dialog::backdrop { background: #0006; backdrop-filter: blur(4px); }
 .interaction-message { white-space: pre-wrap; overflow-wrap: anywhere; }
 .interaction-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .interaction-feedback { font-size: 12px; margin-top: 12px; overflow-wrap: anywhere; }
+.command-preview { margin: 8px 0; padding: 10px; max-height: 18rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .command-targets { font-size: 12px; overflow-wrap: anywhere; }
 .command-targets dd { color: var(--muted); margin: 4px 0 12px; white-space: pre-wrap; }
 #management-status .notice { white-space: pre-wrap; }

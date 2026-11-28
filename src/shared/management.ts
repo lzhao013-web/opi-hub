@@ -14,17 +14,31 @@ export type HistoryReply = { type: "historyResult"; id: string; ok: true; entrie
 export interface Choice { label: string; value: string }
 export interface CommandTarget { action: string; kind: string; target: string; reason: string }
 interface InteractionBase { id: string; sessionId: string; title: string; deadline: number | null }
+export type ApprovalStage = { kind: "choose" } | { kind: "instruction"; token: string };
+interface CommandApproval { kind: "command"; cwd: string; command: string; targets: CommandTarget[]; options: Choice[] }
 export type Interaction = InteractionBase & (
   | { kind: "nativeApproval"; message: string }
   | { kind: "choice"; options: Choice[] }
-  | { kind: "command"; cwd: string; command: string; targets: CommandTarget[]; options: Choice[] }
+  | { kind: "tool"; options: Choice[]; stage: ApprovalStage }
+  | (CommandApproval & ({ shell?: undefined; stage?: undefined } |
+      { shell: "bash" | "powershell"; stage: ApprovalStage }))
   | { kind: "confirm"; message: string }
   | { kind: "input" | "secret"; initial: string; placeholder: string }
   | { kind: "editor"; initial: string }
 );
 export type ManagementState = { state: "connecting" } | { state: "error"; message: string } |
   { state: "ready"; models: ModelOption[]; workspaces: string[]; sessions: ManagedSession[]; interactions: Interaction[]; creations: CreationRecord[]; tasks: TaskRecord[]; notifications: CompletionNotice[]; issues: string[] };
-export interface RespondCommand { type: "respond"; id: string; sessionId: string; dialogId: string; value: string | null }
+export interface InteractionAnswer { sessionId: string; dialogId: string; value: string | null; token?: string }
+export interface RespondCommand extends InteractionAnswer { type: "respond"; id: string }
+export function matchesDialog(dialog: Interaction, answer: InteractionAnswer): boolean {
+  return dialog.id === answer.dialogId && dialog.sessionId === answer.sessionId;
+}
+/** 阶段令牌只随用户看到的表单提交，不能用当前令牌补全旧回答。 */
+export function responseInStage(dialog: Interaction, answer: InteractionAnswer): boolean {
+  if (dialog.kind === "nativeApproval") return false;
+  const stage = "stage" in dialog ? dialog.stage : undefined;
+  return answer.token === (stage?.kind === "instruction" ? stage.token : undefined);
+}
 export type RespondReply = { type: "responded"; id: string; ok: true } | { type: "responded"; id: string; ok: false; error: string };
 export interface ManagementMessage { type: "management"; value: ManagementState }
 const string = (value: unknown): value is string => typeof value === "string";
@@ -40,21 +54,22 @@ function isChoice(value: unknown): value is Choice { return object(value) && str
 function isCommandTarget(value: unknown): value is CommandTarget {
   return object(value) && string(value.action) && string(value.kind) && string(value.target) && string(value.reason);
 }
+function isApprovalStage(value: unknown): value is ApprovalStage {
+  return object(value) && (value.kind === "choose" || value.kind === "instruction" && string(value.token) && value.token.length > 0);
+}
 export function isInteraction(value: unknown): value is Interaction {
   if (!object(value) || !string(value.id) || !string(value.sessionId) || !string(value.title) || !(value.deadline === null || typeof value.deadline === "number" && Number.isFinite(value.deadline))) return false;
   switch (value.kind) {
     case "choice": return Array.isArray(value.options) && value.options.every(isChoice);
-    case "command": return string(value.cwd) && string(value.command) && Array.isArray(value.targets) && value.targets.every(isCommandTarget) && Array.isArray(value.options) && value.options.every(isChoice);
-    case "nativeApproval": case "confirm": return string(value.message);
+    case "tool": return isApprovalStage(value.stage) && Array.isArray(value.options) && value.options.every(isChoice);
+    case "command": return string(value.cwd) && string(value.command) && Array.isArray(value.targets) && value.targets.every(isCommandTarget) &&
+      Array.isArray(value.options) && value.options.every(isChoice) &&
+      (value.shell === undefined && value.stage === undefined || (value.shell === "bash" || value.shell === "powershell") && isApprovalStage(value.stage));
+    case "confirm": case "nativeApproval": return string(value.message);
     case "input": case "secret": return string(value.initial) && string(value.placeholder);
     case "editor": return string(value.initial);
     default: return false;
   }
-}
-export function requireAnswerable(dialogs: Interaction[], sessionId: string, id: string): void {
-  const dialog = dialogs.find((item) => item.sessionId === sessionId && item.id === id);
-  if (!dialog) throw new Error("交互已结束或状态未就绪，请刷新");
-  if (dialog.kind === "nativeApproval") throw new Error(dialog.message);
 }
 export function isManagement(value: unknown): value is ManagementState {
   return object(value) && (value.state === "connecting" || value.state === "error" && string(value.message) ||
@@ -62,8 +77,12 @@ export function isManagement(value: unknown): value is ManagementState {
     Array.isArray(value.interactions) && value.interactions.every(isInteraction) && Array.isArray(value.creations) && value.creations.every(isCreation) && Array.isArray(value.tasks) && value.tasks.every(isTaskRecord) && Array.isArray(value.notifications) && value.notifications.length <= 100 && value.notifications.every(isCompletionNotice) && strings(value.issues));
 }
 export function isManagementMessage(value: unknown): value is ManagementMessage { return object(value) && value.type === "management" && isManagement(value.value); }
+export function isInteractionAnswer(value: unknown): value is InteractionAnswer {
+  return object(value) && string(value.sessionId) && string(value.dialogId) && (string(value.value) || value.value === null) &&
+    (value.token === undefined || string(value.token));
+}
 export function isRespond(value: unknown): value is RespondCommand {
-  return object(value) && value.type === "respond" && string(value.id) && string(value.sessionId) && string(value.dialogId) && (string(value.value) || value.value === null);
+  return object(value) && value.type === "respond" && string(value.id) && isInteractionAnswer(value);
 }
 export function isHistoryEntry(value: unknown): value is HistoryEntry {
   return object(value) && string(value.path) && string(value.title) && string(value.cwd) && string(value.modified);

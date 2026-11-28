@@ -21,9 +21,9 @@ function preview(text: string): string {
   return `${prefix}${excerpt}…`;
 }
 
-type ApprovalInteraction = Extract<Interaction, { kind: "command" | "choice" | "confirm" | "nativeApproval" }>;
+type ApprovalInteraction = Extract<Interaction, { kind: "command" | "choice" | "confirm" | "tool" | "nativeApproval" }>;
 function isApproval(item: Interaction): item is ApprovalInteraction {
-  return item.kind === "command" || item.kind === "choice" || item.kind === "confirm" || item.kind === "nativeApproval";
+  return item.kind === "command" || item.kind === "choice" || item.kind === "confirm" || item.kind === "tool" || item.kind === "nativeApproval";
 }
 /** 本机开关只决定是否订阅；跨设备摘要的接收权限必须由已登录浏览器授予。 */
 export class NodeNotifications {
@@ -72,7 +72,8 @@ export class NodeNotifications {
     for (const item of state.interactions) {
       if (!isApproval(item) || prior.has(JSON.stringify([item.sessionId, item.id]))) continue;
       const decisions: ApprovalDecision[] = [];
-      if ("options" in item) for (const decision of ["allow", "deny"] as const) {
+      const stage = "stage" in item ? item.stage?.kind : undefined;
+      if ("options" in item && stage !== "instruction") for (const decision of ["allow", "deny"] as const) {
         if (item.options.some((option) => option.value === approvalChoice[decision])) decisions.push(decision);
       }
       let text = "message" in item ? `${item.title}\n${item.message}` : item.title;

@@ -3,7 +3,7 @@ import type { ModelOption } from "../../shared/models.ts";
 import type { RawData, WebSocket } from "ws";
 import { parse } from "../../shared/protocol.ts";
 import { buffer } from "../../shared/sockets.ts";
-import { requireAnswerable, type Interaction, type ManagedSession, type ManagementState } from "../../shared/management.ts";
+import { matchesDialog, responseInStage, type Interaction, type InteractionAnswer, type ManagedSession, type ManagementState } from "../../shared/management.ts";
 import type { CompletionNotice } from "../../shared/notifications.ts";
 import { CompletionObserver } from "./completion.ts";
 import { OpiClient } from "./client.ts";
@@ -12,7 +12,7 @@ import { listDirectories } from "./directories.ts";
 import { SessionCreation } from "./creation.ts";
 import { AgentTask } from "./task.ts";
 import { blockingTask, executingTask, type TaskInput } from "../../shared/tasks.ts";
-import { applyDirectory, decodeDialog, decodeEvent, decodeFrame, decodeModels, type Activity, type OpiEvent, type Selected, type Workspace } from "./wire.ts";
+import { applyDirectory, decodeDialog, decodeEvent, decodeFrame, decodeModels, dialogAction, type Activity, type OpiEvent, type Selected, type Workspace } from "./wire.ts";
 
 /** 每个订阅有独立客户端身份，不借用浏览器的导航或审批连接。 */
 class Subscription {
@@ -71,12 +71,12 @@ class Subscription {
       catch { break; }
     }
   }
-  async respond(sessionId: string, dialogId: string, value: string | null): Promise<void> {
+  async respond(answer: InteractionAnswer): Promise<void> {
     const client = this.client;
     if (!this.connected || !client) throw new Error("交互连接已变化，请刷新状态");
-    requireAnswerable(this.dialogs, sessionId, dialogId);
+    const action = dialogAction(this.dialogs, answer);
     this.responses++;
-    try { await client.action({ action: "dialog", id: dialogId, value }, sessionId, AbortSignal.timeout(25_000)); }
+    try { await client.action(action, answer.sessionId, AbortSignal.timeout(25_000)); }
     finally { this.responses--; this.changed(); }
   }
   async close(): Promise<void> { this.controller.abort(); this.client?.close(); await this.task; }
@@ -235,14 +235,11 @@ export class OpiManagement {
   }
   async cancelTask(id: string): Promise<void> { const task = this.tasks.get(id); if (!task) throw new Error("未找到原运行，无法确认已停止"); await task.cancel(); }
   acknowledgeTask(id: string): void { this.tasks.get(id)?.acknowledge(); }
-  async respond(sessionId: string, dialogId: string, value: string | null): Promise<void> {
-    const task = [...this.tasks.values()].find((task) => task.dialogs.some((dialog) => dialog.sessionId === sessionId && dialog.id === dialogId));
-    if (task) { await task.respond(sessionId, dialogId, value); return; }
-    const subscription = this.catalog.selected?.id === sessionId ? this.catalog : this.watches.get(sessionId);
-    const creation = [...this.creations.values()].find((creation) => creation.dialogs.some((dialog) => dialog.sessionId === sessionId && dialog.id === dialogId));
-    if (creation) { await creation.respond(sessionId, dialogId, value); return; }
-    if (!subscription) throw new Error("目标交互已结束，请刷新状态");
-    await subscription.respond(sessionId, dialogId, value);
+  async respond(answer: InteractionAnswer): Promise<void> {
+    const sources = [...this.tasks.values(), ...this.creations.values(), this.catalog, ...this.watches.values()];
+    const source = sources.find((item) => item.dialogs.some((dialog) => matchesDialog(dialog, answer) && responseInStage(dialog, answer)));
+    if (!source) throw new Error("目标交互已结束，请刷新状态");
+    await source.respond(answer);
   }
   async close(): Promise<void> {
     if (this.stopped) return;

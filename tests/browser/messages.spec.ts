@@ -16,13 +16,24 @@ async function device(page: Page): Promise<string> {
   const entry: unknown = value.devices.find((item: unknown) => object(item) && item.name === "开发台式机");
   if (!object(entry) || typeof entry.id !== "string") throw new Error("缺少设备身份"); return entry.id;
 }
-test("通知深链接登录后定位原审批，过期链接提示且不提交审批", async ({ page }) => {
+test("通知深链接登录后定位原审批，过期链接提示且不提交审批", async ({ page, context }) => {
   await login(page);
   const deviceId = await device(page);
-  const state: unknown = await (await page.request.get("/_hub/overview")).json();
-  if (!object(state) || !Array.isArray(state.interactions)) throw new Error("缺少待处理审批");
-  const target: unknown = state.interactions.find((item: unknown) => object(item) && item.deviceId === deviceId);
-  if (!object(target) || typeof target.id !== "string" || typeof target.sessionId !== "string") throw new Error("缺少目标审批");
+  const native = await context.newPage(); await native.goto(`/n/${deviceId}/`);
+  await expect(native.locator("#name")).toHaveText("设备 A");
+  const created = native.waitForResponse((response) => response.url().endsWith("/api/action"));
+  await native.getByRole("button", { name: "创建审批", exact: true }).click();
+  expect((await created).ok()).toBe(true);
+  await native.close(); await page.bringToFront();
+  let target: { id: string; sessionId: string } | undefined;
+  await expect.poll(async () => {
+    const state: unknown = await (await page.request.get("/_hub/overview")).json();
+    if (!object(state) || !Array.isArray(state.interactions)) return false;
+    const item: unknown = state.interactions.find((value: unknown) => object(value) && value.deviceId === deviceId);
+    if (!object(item) || typeof item.id !== "string" || typeof item.sessionId !== "string") return false;
+    target = { id: item.id, sessionId: item.sessionId }; return true;
+  }).toBe(true);
+  if (!target) throw new Error("缺少目标审批");
   const origin = new URL(page.url()).origin;
   const url = approvalUrl(origin, { deviceId, sessionId: target.sessionId, dialogId: target.id });
   const card = page.locator(`[data-dialog-id="${target.id}"][data-device-id="${deviceId}"]`);
@@ -37,6 +48,7 @@ test("通知深链接登录后定位原审批，过期链接提示且不提交�
   await page.goto(approvalUrl(origin, { deviceId, sessionId: target.sessionId, dialogId: "missing" }));
   await expect(page.getByRole("status").filter({ hasText: "这条审批不再待处理" })).toBeVisible();
   expect(responses).toBe(0);
+  await page.request.post("/_hub/respond", { headers: { Origin: origin }, data: { deviceId, sessionId: target.sessionId, dialogId: target.id, value: null } });
 });
 
 async function action(page: Page, deviceId: string, sessionId: string, text: string): Promise<void> {

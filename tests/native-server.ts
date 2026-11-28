@@ -6,7 +6,7 @@ import { startHub } from "../src/hub/server.ts";
 import { Store } from "../src/hub/store.ts";
 import { startNode } from "../src/node/agent.ts";
 import { add, login, PASSWORD, waitDevices } from "./helpers.ts";
-import { startModel } from "./model.ts";
+import { fixtureShell, startModel } from "./model.ts";
 
 const source = process.env.OPI_WEB_BINARY;
 if (!source) throw new Error("需要 OPI_WEB_BINARY 指向已构建的 opi-web 二进制");
@@ -14,6 +14,8 @@ const directory = await mkdtemp(path.join(tmpdir(), "opi-hub-native-"));
 const home = path.join(directory, "home");
 const cwd = path.join(directory, "workspace");
 const agentDir = path.join(home, ".pi", "agent");
+const temporary = path.join(directory, "runtime-temp");
+await mkdir(temporary);
 await mkdir(cwd, { recursive: true });
 await mkdir(path.join(directory, "remote-project"));
 for (const project of ["trust-project", "scheduled-project"]) {
@@ -45,14 +47,15 @@ await writeFile(path.join(agentDir, "extensions", "hub-test.js"), `export defaul
 }`);
 await writeFile(path.join(cwd, "hello.txt"), "原生 o-pi 远程文件预览\n");
 const model = await startModel();
-await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "never", defaultProvider: "hub-fixture", defaultModel: "test", compaction: { enabled: false }, retry: { enabled: false } }));
+await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "never", defaultProvider: "hub-fixture", defaultModel: "test", defaultTools: [`+${fixtureShell}`, "+write"], compaction: { enabled: false }, retry: { enabled: false } }));
 await writeFile(path.join(agentDir, "models.json"), JSON.stringify({ providers: { "hub-fixture": { api: "openai-completions", baseUrl: model.url, apiKey: "fixture", models: ["test", "test-alt"].map((id) => ({ id, name: id === "test" ? "Fixture" : "Fixture Alternate", input: ["text"], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) } } }));
 await writeFile(path.join(agentDir, "configs", "auto-title.jsonc"), '{"enabled":false}');
 await writeFile(path.join(agentDir, "configs", "discord-presence.jsonc"), '{"enabled":false}');
+await writeFile(path.join(agentDir, "configs", "approval-gate.jsonc"), '{"tools":{"shell":{"default_action":"ask"},"write":{"default_action":"ask"}}}');
 const binary = path.join(directory, process.platform === "win32" ? "opi-web.exe" : "opi-web");
 await copyFile(source, binary);
-const childEnv = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && /^(PATH|SYSTEMROOT|WINDIR|TEMP|TMP|DISPLAY|XAUTHORITY|LD_LIBRARY_PATH|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS)$/i.test(entry[0])));
-Object.assign(childEnv, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", OPI_NO_NOTIFICATIONS: "1", NODE_ENV: "test", XDG_CONFIG_HOME: path.join(home, "config") });
+const childEnv = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined && /^(PATH|SYSTEMROOT|WINDIR|PROGRAMFILES|DISPLAY|XAUTHORITY|LD_LIBRARY_PATH|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS)$/i.test(entry[0])));
+Object.assign(childEnv, { HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", OPI_NO_NOTIFICATIONS: "1", NODE_ENV: "test", XDG_CONFIG_HOME: path.join(home, "config"), TEMP: temporary, TMP: temporary, TMPDIR: temporary });
 // 此脚本是独立测试进程。托管子进程只继承隔离环境，不读取用户真实配置。
 for (const key of Object.keys(process.env)) delete process.env[key];
 Object.assign(process.env, childEnv);
